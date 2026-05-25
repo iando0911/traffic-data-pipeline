@@ -14,39 +14,29 @@ import zipfile
 warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════
-# Step 1：終極自動化萃取 (政府 JSON API 介接 + 記憶體解壓縮)
+# Step 1：終極自動化萃取 (介接內政部底層 API + 記憶體解壓縮)
 # ═══════════════════════════════════════════════════════
-print("[Step 1] 啟動自動化 ETL 管線：透過政府 API 尋找最新 A1/A2 車禍資料...")
+print("[Step 1] 啟動自動化 ETL 管線：介接內政部直屬 API 獲取 A1/A2 車禍資料...")
 
-# 直接使用政府開放資料的專屬 JSON API 端點，徹底避開網頁爬蟲被阻擋或 JS 渲染問題
-dataset_ids = ['13069', '13070']
-dynamic_urls = []
-
-# 🕸️ 1. 透過政府官方 API 取得真正的下載連結
-for did in dataset_ids:
-    api_url = f"https://data.gov.tw/api/v2/rest/dataset/{did}"
-    print(f"🔍 正在呼叫政府 API：{api_url}")
-    try:
-        response = requests.get(api_url, timeout=30)
-        data = response.json()
-        if data.get('success'):
-            for dist in data['result'].get('distribution', []):
-                d_url = dist.get('resourceDownloadUrl')
-                if d_url:
-                    dynamic_urls.append(d_url)
-    except Exception as e:
-        print(f"❌ API 呼叫失敗: {e}")
-
-dynamic_urls = list(set(dynamic_urls))
-print(f"🎯 API 掃描完畢！系統自動鎖定了 {len(dynamic_urls)} 個最新的下載檔案！")
+# 🎯 殺手鐧：使用你找到的「內政部底層 API」，完美繞過 data.gov.tw 的爬蟲阻擋！
+accident_urls = [
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download', 
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download',
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/79165BC4-09EA-41D7-A1B0-C4355D9B4A31/download',
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/00E3617E-C3B2-4B0E-AC93-5A6F1B531B04/download',
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E76E38F3-D046-4E87-B759-97B746AA5B1B/download',
+    'https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/8B93B29A-644E-49C1-8056-19681D361E43/download'
+]
 
 dfs = []
 
-# 📥 2. 逐一下載並解析這些檔案
-for url in dynamic_urls:
+# 📥 逐一下載並解析這些檔案
+for url in accident_urls:
     print(f"📥 正在下載並解析: {url[:60]}...")
     try:
-        file_resp = requests.get(url, timeout=30)
+        # 加入 headers 偽裝成正常瀏覽器
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        file_resp = requests.get(url, headers=headers, timeout=30)
         
         # 處理 ZIP 壓縮檔
         if url.endswith('.zip') or b'PK\x03\x04' in file_resp.content[:4]:
@@ -71,7 +61,7 @@ for url in dynamic_urls:
     except Exception as e:
         print(f"   ❌ 無法解析此檔案: {e}")
 
-# 3. 合併所有資料並修正「民國年」陷阱
+# 合併所有資料並修正「民國年」陷阱
 if not dfs:
     print("⚠️ 警告：目前沒有下載到任何線上資料。")
     df_acc = pd.DataFrame()
