@@ -3,5 +3,3 @@ requests
 folium
 scipy
 plotly
-beautifulsoup4
-lxml
