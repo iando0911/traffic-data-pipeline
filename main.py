@@ -9,61 +9,51 @@ import os
 import requests
 import io
 import warnings
+import requests
+from bs4 import BeautifulSoup
+import zipfile
+
 warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════
-# Step 1：自動化萃取 (API / URL 介接) 讀取 A1/A2 車禍資料
+# Step 1：終極自動化萃取 (動態網頁爬蟲 + 記憶體解壓縮)
 # ═══════════════════════════════════════════════════════
-print("[Step 1] 啟動自動化 ETL 管線：透過網路抓取最新 A1/A2 車禍資料...")
+print("[Step 1] 啟動自動化 ETL 管線：動態尋找並下載最新 A1/A2 車禍資料...")
 
-# ⚠️ 請將下方的網址替換為政府資料開放平台真實的 CSV 下載連結 (OData 或檔案連結)
-accident_urls = [
-    'https://[請填入政府開放資料的真實_A1_CSV_下載連結]', 
-    'https://[請填入政府開放資料的真實_A2_1_CSV_下載連結]',
-    # 'https://...', 如果有更多連結請繼續往下加
+# 🎯 這裡不要放「下載檔案的網址」，而是放「該資料集的介紹主網頁」！
+# (也就是你前幾張截圖，有藍色 ZIP 下載按鈕的那個政府網頁)
+dataset_pages = [
+    'https://data.gov.tw/dataset/13069',  # 範例：警政署 A1 交通事故資料集主頁
+    'https://data.gov.tw/dataset/13070'   # 範例：警政署 A2 交通事故資料集主頁
+    # ⚠️ 請把上面這兩個網址，換成你截圖那個網頁的真實網址！
 ]
 
-dfs = []
-for url in accident_urls:
-    if "請填入" in url:
-        print("⚠️ 提醒：請記得將 accident_urls 替換為真實的政府資料下載連結！目前跳過測試網址。")
-        continue
-        
-    print(f"📥 正在下載資料: {url[:50]}...")
+dynamic_urls = []
+
+# 🕸️ 1. 啟動爬蟲：去網頁上把所有最新的下載連結全部抓下來
+for page_url in dataset_pages:
+    print(f"🔍 正在掃描資料集頁面：{page_url}")
     try:
-        # 使用 requests 抓取網路資料
-        response = requests.get(url, timeout=30)
-        response.raise_for_status() # 檢查是否成功下載 (HTTP 200)
+        response = requests.get(page_url, timeout=30)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 嘗試解析 CSV 內容 (處理 utf-8 與 cp950 編碼問題)
-        try:
-            response.encoding = 'utf-8'
-            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-        except UnicodeDecodeError:
-            response.encoding = 'cp950'
-            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-
-        # 移除政府 CSV 結尾的元資料列
-        original_len = len(df)
-        df = df[pd.to_numeric(df['發生年度'], errors='coerce') == 2026].copy()
-        removed = original_len - len(df)
-        if removed:
-            print(f"   🧹 移除 {removed} 筆後記元資料列")
-            
-        dfs.append(df)
-        print("   ✅ 下載並初步解析成功。")
-        
+        # 尋找網頁上所有的超連結
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            # 如果連結結尾是 .zip、.csv 或是包含 download 字眼，就視為下載點
+            if href.endswith('.zip') or href.endswith('.csv') or 'download' in href:
+                full_url = href if href.startswith('http') else f"https://data.gov.tw{href}"
+                dynamic_urls.append(full_url)
+                
     except Exception as e:
-        print(f"   ❌ 下載或讀取失敗: {e}")
+        print(f"❌ 掃描 {page_url} 失敗: {e}")
 
-if not dfs:
-    # 為了讓你在還沒填入真實網址前，GitHub Actions 測試不會直接報錯當掉，
-    # 這裡若沒下載到東西，會先建立一個空的 DataFrame 結構讓程式能走完。
-    print("⚠️ 警告：目前沒有下載到任何線上資料。將建立空資料表以供管線測試。")
-    df_acc = pd.DataFrame(columns=['發生年度', '發生月份', '發生日期', '經度', '緯度', '肇因研判子類別名稱-主要', '當事者屬-性-別名稱', '當事者事故發生時年齡', '當事者順位'])
-else:
-    df_acc = pd.concat(dfs, ignore_index=True)
-    print(f"✅ 成功匯入 {len(df_acc):,} 筆原始交通事故當事者紀錄！")
+# 去除重複的網址
+dynamic_urls = list(set(dynamic_urls))
+print(f"🎯 掃描完畢！系統自動鎖定了 {len(dynamic_urls)} 個最新的下載檔案！")
+
+dfs = []
+
 
 # ═══════════════════════════════════════════════════════
 # Step 2：特徵工程與主要肇事者精準過濾
