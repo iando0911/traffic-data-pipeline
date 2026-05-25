@@ -556,7 +556,7 @@ title_html = """
 """
 m.get_root().html.add_child(folium.Element(title_html))
 
-map_path = CONFIG["output_dir"] / "index.html"
+map_path = CONFIG["output_dir"] / "heatmap.html"
 m.save(str(map_path))
 print(f"   ✅ 地圖已儲存：{map_path}（{len(heat_data):,} 個座標點）")
 
@@ -644,7 +644,7 @@ html_report = f"""<!DOCTYPE html>
       <a class="nav-btn" href="monthly_trend.html">📈 月份趨勢</a>
       <a class="nav-btn" href="absent_trend.html">🚨 講習未到趨勢</a>
       <a class="nav-btn" href="stats_table.html">📋 統計摘要表</a>
-      <a class="nav-btn" href="index.html">🗺️ 地理熱力圖</a>
+      <a class="nav-btn" href="heatmap.html">🗺️ 地理熱力圖</a>
     </div>
   </div>
 
@@ -662,7 +662,7 @@ html_report = f"""<!DOCTYPE html>
 </html>
 """
 
-report_path = CONFIG["output_dir"] / "report.html"
+report_path = CONFIG["output_dir"] / "index.html"
 report_path.write_text(html_report, encoding="utf-8")
 print(f"   ✅ 整合報告首頁：{report_path}")
 
