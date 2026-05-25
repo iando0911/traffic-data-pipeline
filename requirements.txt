@@ -1,5 +1,7 @@
 pandas
-requests
-folium
+numpy
 scipy
+requests
 plotly
+folium
+kaleido
