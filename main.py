@@ -9,50 +9,46 @@ import os
 import requests
 import io
 import warnings
-from bs4 import BeautifulSoup
 import zipfile
 
 warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════
-# Step 1：終極自動化萃取 (動態網頁爬蟲 + 記憶體解壓縮)
+# Step 1：終極自動化萃取 (政府 JSON API 介接 + 記憶體解壓縮)
 # ═══════════════════════════════════════════════════════
-print("[Step 1] 啟動自動化 ETL 管線：動態尋找並下載最新 A1/A2 車禍資料...")
+print("[Step 1] 啟動自動化 ETL 管線：透過政府 API 尋找最新 A1/A2 車禍資料...")
 
-dataset_pages = [
-    'https://data.gov.tw/dataset/13069',  # 警政署 A1 交通事故資料集主頁
-    'https://data.gov.tw/dataset/13070'   # 警政署 A2 交通事故資料集主頁
-]
-
+# 直接使用政府開放資料的專屬 JSON API 端點，徹底避開網頁爬蟲被阻擋或 JS 渲染問題
+dataset_ids = ['13069', '13070']
 dynamic_urls = []
 
-# 🕸️ 1. 啟動爬蟲：抓取最新下載連結
-for page_url in dataset_pages:
-    print(f"🔍 正在掃描資料集頁面：{page_url}")
+# 🕸️ 1. 透過政府官方 API 取得真正的下載連結
+for did in dataset_ids:
+    api_url = f"https://data.gov.tw/api/v2/rest/dataset/{did}"
+    print(f"🔍 正在呼叫政府 API：{api_url}")
     try:
-        response = requests.get(page_url, timeout=30)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for a_tag in soup.find_all('a', href=True):
-            href = a_tag['href']
-            if href.endswith('.zip') or href.endswith('.csv') or 'download' in href:
-                full_url = href if href.startswith('http') else f"https://data.gov.tw{href}"
-                dynamic_urls.append(full_url)
-                
+        response = requests.get(api_url, timeout=30)
+        data = response.json()
+        if data.get('success'):
+            for dist in data['result'].get('distribution', []):
+                d_url = dist.get('resourceDownloadUrl')
+                if d_url:
+                    dynamic_urls.append(d_url)
     except Exception as e:
-        print(f"❌ 掃描 {page_url} 失敗: {e}")
+        print(f"❌ API 呼叫失敗: {e}")
 
 dynamic_urls = list(set(dynamic_urls))
-print(f"🎯 掃描完畢！系統自動鎖定了 {len(dynamic_urls)} 個最新的下載檔案！")
+print(f"🎯 API 掃描完畢！系統自動鎖定了 {len(dynamic_urls)} 個最新的下載檔案！")
 
 dfs = []
 
-# 📥 2. 逐一下載並解析這些檔案 (你剛才漏掉的最重要這段！)
+# 📥 2. 逐一下載並解析這些檔案
 for url in dynamic_urls:
     print(f"📥 正在下載並解析: {url[:60]}...")
     try:
         file_resp = requests.get(url, timeout=30)
         
+        # 處理 ZIP 壓縮檔
         if url.endswith('.zip') or b'PK\x03\x04' in file_resp.content[:4]:
             with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
                 for filename in z.namelist():
@@ -65,6 +61,7 @@ for url in dynamic_urls:
                                 df = pd.read_csv(f, encoding='cp950', low_memory=False)
                             dfs.append(df)
         else:
+            # 處理單純 CSV
             try:
                 df = pd.read_csv(io.StringIO(file_resp.text), low_memory=False)
             except UnicodeDecodeError:
@@ -74,16 +71,18 @@ for url in dynamic_urls:
     except Exception as e:
         print(f"   ❌ 無法解析此檔案: {e}")
 
-# 合併所有資料
+# 3. 合併所有資料並修正「民國年」陷阱
 if not dfs:
     print("⚠️ 警告：目前沒有下載到任何線上資料。")
     df_acc = pd.DataFrame()
 else:
     df_acc = pd.concat(dfs, ignore_index=True)
-    # 過濾出 2026 年度的資料
-    df_acc = df_acc[pd.to_numeric(df_acc['發生年度'], errors='coerce') == 2026].copy()
+    
+    # 🚨【關鍵修復】政府資料使用的是「民國年」(115) 而非西元年(2026)！
+    df_acc['發生年度'] = pd.to_numeric(df_acc['發生年度'], errors='coerce')
+    df_acc = df_acc[df_acc['發生年度'].isin([115, 2026])].copy()
+    
     print(f"✅ 成功匯入 {len(df_acc):,} 筆原始交通事故當事者紀錄！")
-
 
 # ═══════════════════════════════════════════════════════
 # Step 2：特徵工程與主要肇事者精準過濾
