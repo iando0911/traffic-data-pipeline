@@ -239,7 +239,7 @@ if len(male_ages) > 1 and len(female_ages) > 1:
         "男性標準差": round(male_ages.std(), 2),
         "女性標準差": round(female_ages.std(), 2),
         "T統計量": round(t_stat, 4),
-        "P值": round(p_val, 6),
+        "P值": f"{p_val:.3e}" if p_val < 0.0001 else round(p_val, 6),
         "顯著性": format_pvalue(p_val),
         "Cohen's d": round(cohens_d, 4),
         "效果量解釋": "小" if abs(cohens_d) < 0.2 else ("中" if abs(cohens_d) < 0.5 else "大"),
@@ -401,90 +401,145 @@ absent_path = Path(CONFIG["absent_csv"])
 if absent_path.exists():
     df_absent = safe_read_csv(absent_path, label="道安講習未到.csv")
     print(f"   ✅ 讀取本地檔案成功：{len(df_absent):,} 筆")
+    print(f"   原始欄位：{list(df_absent.columns)}")
+
+    # ── 偵測年度欄位，移除「年」字只保留數字 ──
+    year_col = next((c for c in df_absent.columns if "年" in c or "year" in c.lower()), None)
+    if year_col:
+        df_absent["年度_num"] = (
+            df_absent[year_col].astype(str)
+            .str.replace("年", "", regex=False)
+            .str.strip()
+            .pipe(pd.to_numeric, errors="coerce")
+        )
+    else:
+        df_absent["年度_num"] = np.nan
+
+    # ── 數值欄加總（支援「機車/男性, 機車/女性, 汽車/男性, 汽車/女性」格式）
+    numeric_cols = [
+        c for c in df_absent.columns
+        if c not in [year_col, "年度_num"]
+        and pd.to_numeric(df_absent[c], errors="coerce").notna().sum() > 0
+    ]
+    for col in numeric_cols:
+        df_absent[col] = pd.to_numeric(df_absent[col], errors="coerce")
+
+    motor_cols  = [c for c in numeric_cols if "機車" in c]
+    car_cols    = [c for c in numeric_cols if "汽車" in c or "小客" in c]
+    male_cols   = [c for c in numeric_cols if "男" in c]
+    female_cols = [c for c in numeric_cols if "女" in c]
+
+    df_absent["機車未到"] = df_absent[motor_cols].sum(axis=1)  if motor_cols  else 0
+    df_absent["汽車未到"] = df_absent[car_cols].sum(axis=1)    if car_cols    else 0
+    df_absent["男性未到"] = df_absent[male_cols].sum(axis=1)   if male_cols   else 0
+    df_absent["女性未到"] = df_absent[female_cols].sum(axis=1) if female_cols else 0
+    df_absent["未到人數"] = df_absent[numeric_cols].sum(axis=1)
+
+    absent_col = "未到人數"
+    rate_col   = None
+    print(f"   未到人數範圍：{df_absent['未到人數'].min():.0f} ~ {df_absent['未到人數'].max():.0f}")
+
 else:
     print(f"   ⚠️  找不到 {CONFIG['absent_csv']}，以模擬資料示範...")
-    # ── 模擬多年度未到資料 ──────────────────────────
     df_absent = pd.DataFrame({
-        "年度": list(range(108, 116)),
-        "應到人數": [52000, 55000, 48000, 61000, 67000, 70000, 72000, 74000],
-        "實到人數": [44000, 46000, 39000, 50000, 54000, 56000, 57000, 58000],
-        "未到人數": [ 8000,  9000,  9000, 11000, 13000, 14000, 15000, 16000],
+        "年度_num": list(range(103, 114)),
+        "未到人數": [12507, 12701, 13724, 19047, 22251, 20157, 21263, 17614, 28272, 46318, 44800],
+        "機車未到": [ 8997,  7701,  9113, 12803, 14859, 12624, 13031, 10507, 17569, 27510, 25506],
+        "汽車未到": [ 3510,  5000,  4611,  6244,  7392,  7542,  8232,  7107, 10703, 18808, 19294],
+        "男性未到": [ 8997,  7701,  9113, 12803, 14859, 12624, 13031, 10507, 17569, 27510, 25506],
+        "女性未到": [  891,   629,   728,  1064,  1308,  1091,  1299,  1238,  2110,  3240,  3123],
     })
-    df_absent["未到率(%)"] = (df_absent["未到人數"] / df_absent["應到人數"] * 100).round(2)
+    year_col   = "年度_num"
+    absent_col = "未到人數"
+    rate_col   = None
 
-# ── 欄位容錯偵測 ──────────────────────────────────────
-year_col    = next((c for c in df_absent.columns if "年" in c or "year" in c.lower()), None)
-absent_col  = next((c for c in df_absent.columns if "未到" in c and "率" not in c), None)
-total_col   = next((c for c in df_absent.columns if "應到" in c or "總" in c), None)
-arrive_col  = next((c for c in df_absent.columns if "實到" in c), None)
-rate_col    = next((c for c in df_absent.columns if "率" in c or "rate" in c.lower()), None)
+# ── 趨勢分析（線性迴歸 + 機車/汽車/性別分組）────────
+x_col = "年度_num" if "年度_num" in df_absent.columns else year_col
+x_all = pd.to_numeric(df_absent[x_col], errors="coerce")
+y_all = pd.to_numeric(df_absent[absent_col], errors="coerce")
+valid = x_all.notna() & y_all.notna()
 
-print(f"   偵測欄位：年度={year_col}，應到={total_col}，實到={arrive_col}，未到={absent_col}，未到率={rate_col}")
+has_breakdown = all(c in df_absent.columns for c in ["機車未到", "汽車未到", "男性未到", "女性未到"])
 
-# ── 計算未到率（若無現成欄位）──────────────────────────
-if rate_col is None and absent_col and total_col:
-    df_absent["未到率(%)"] = (
-        pd.to_numeric(df_absent[absent_col], errors="coerce") /
-        pd.to_numeric(df_absent[total_col],  errors="coerce") * 100
-    ).round(2)
-    rate_col = "未到率(%)"
+if has_breakdown:
+    fig_absent = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=("歷年總未到人數（含趨勢線）", "機車 vs 汽車未到人數",
+                        "男性 vs 女性未到人數", "各類別佔比（最新年度）"),
+        vertical_spacing=0.18, horizontal_spacing=0.1,
+    )
+else:
+    fig_absent = make_subplots(rows=1, cols=1,
+        subplot_titles=("歷年道安講習未到人數",))
 
-# ── 趨勢分析（線性迴歸）──────────────────────────────
-fig_absent = make_subplots(
-    rows=2, cols=1,
-    subplot_titles=("歷年道安講習未到人數", "歷年未到率（%）趨勢"),
-    vertical_spacing=0.15,
+# 子圖 1：總未到人數 + 趨勢線
+fig_absent.add_trace(
+    go.Bar(x=x_all[valid], y=y_all[valid], name="總未到人數",
+           marker_color="#FF6B6B", opacity=0.8),
+    row=1, col=1,
 )
-
-if year_col and absent_col:
-    x = pd.to_numeric(df_absent[year_col], errors="coerce")
-    y = pd.to_numeric(df_absent[absent_col], errors="coerce")
-    valid = x.notna() & y.notna()
-
+if valid.sum() >= 3:
+    slope, intercept, r, p, se = stats.linregress(x_all[valid], y_all[valid])
+    x_line = np.linspace(x_all[valid].min(), x_all[valid].max(), 100)
     fig_absent.add_trace(
-        go.Bar(x=x[valid], y=y[valid], name="未到人數", marker_color="#FF6B6B"),
+        go.Scatter(x=x_line, y=slope * x_line + intercept, mode="lines",
+                   name=f"趨勢線 (R²={r**2:.3f})",
+                   line=dict(dash="dash", color="#FF9500", width=2)),
         row=1, col=1,
     )
+    print(f"   線性迴歸：斜率={slope:.1f} 人/年，R²={r**2:.3f}，{format_pvalue(p)}")
 
-    # 線性迴歸趨勢線
-    if valid.sum() >= 3:
-        slope, intercept, r, p, se = stats.linregress(x[valid], y[valid])
-        x_line = np.linspace(x[valid].min(), x[valid].max(), 100)
-        y_line = slope * x_line + intercept
+if has_breakdown:
+    # 子圖 2：機車 vs 汽車
+    for col, color, label in [("機車未到", "#3A86FF", "機車"), ("汽車未到", "#FF006E", "汽車")]:
+        y2 = pd.to_numeric(df_absent[col], errors="coerce")
         fig_absent.add_trace(
-            go.Scatter(
-                x=x_line, y=y_line, mode="lines",
-                name=f"趨勢線 (R²={r**2:.3f})",
-                line=dict(dash="dash", color="#FF9500", width=2),
-            ),
-            row=1, col=1,
+            go.Scatter(x=x_all[valid], y=y2[valid], mode="lines+markers",
+                       name=label, line=dict(color=color, width=2),
+                       marker=dict(size=6)),
+            row=1, col=2,
         )
-        print(f"   線性迴歸：斜率={slope:.1f} 人/年，R²={r**2:.3f}，{format_pvalue(p)}")
 
-if year_col and rate_col:
-    x = pd.to_numeric(df_absent[year_col], errors="coerce")
-    y = pd.to_numeric(df_absent[rate_col], errors="coerce")
-    valid = x.notna() & y.notna()
+    # 子圖 3：男性 vs 女性
+    for col, color, label in [("男性未到", "#3A86FF", "男性"), ("女性未到", "#FF6B9D", "女性")]:
+        y3 = pd.to_numeric(df_absent[col], errors="coerce")
+        fig_absent.add_trace(
+            go.Scatter(x=x_all[valid], y=y3[valid], mode="lines+markers",
+                       name=label, line=dict(color=color, width=2),
+                       marker=dict(size=6)),
+            row=2, col=1,
+        )
+
+    # 子圖 4：最新年度圓餅圖
+    last = df_absent.loc[valid].iloc[-1]
+    pie_labels = ["機車/男性", "機車/女性", "汽車/男性", "汽車/女性"]
+    motor_m = last.get("機車未到", 0) * 0.9  # 近似拆分
+    motor_f = last.get("機車未到", 0) * 0.1
+    car_m   = last.get("汽車未到", 0) * 0.85
+    car_f   = last.get("汽車未到", 0) * 0.15
+    # 若有原始欄位則直接用
+    orig_cols = {c: df_absent[c].iloc[-1] for c in df_absent.columns if "/" in c}
+    if orig_cols:
+        pie_labels = list(orig_cols.keys())
+        pie_values = [float(v) for v in orig_cols.values()]
+    else:
+        pie_values = [motor_m, motor_f, car_m, car_f]
 
     fig_absent.add_trace(
-        go.Scatter(
-            x=x[valid], y=y[valid], mode="lines+markers",
-            name="未到率(%)", marker=dict(size=8),
-            line=dict(color="#8B5CF6", width=2),
-        ),
-        row=2, col=1,
+        go.Pie(labels=pie_labels, values=pie_values,
+               hole=0.4, name="佔比"),
+        row=2, col=2,
     )
 
 fig_absent.update_layout(
-    title="🚨 道安講習阻嚇力驗證：歷年未到人數與未到率趨勢",
+    title=f"🚨 道安講習阻嚇力驗證：歷年未到人數趨勢分析（民國 {int(x_all[valid].min())}～{int(x_all[valid].max())} 年）",
     template=PLOTLY_THEME,
     font=dict(family="Noto Sans TC, sans-serif"),
-    height=700,
+    height=750 if has_breakdown else 450,
     showlegend=True,
 )
 fig_absent.update_xaxes(title_text="年度（民國）")
-fig_absent.update_yaxes(title_text="人數", row=1, col=1)
-fig_absent.update_yaxes(title_text="未到率（%）", row=2, col=1)
+fig_absent.update_yaxes(title_text="人數（人）")
 fig_absent.write_html(str(CONFIG["output_dir"] / "absent_trend.html"))
 print("   ✅ absent_trend.html")
 
