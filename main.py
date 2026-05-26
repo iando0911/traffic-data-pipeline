@@ -260,7 +260,7 @@ if len(male_ages) > 1 and len(female_ages) > 1:
 
     print(f"   男性 N={len(male_ages):,}，平均年齡={male_ages.mean():.2f}，SD={male_ages.std():.2f}")
     print(f"   女性 N={len(female_ages):,}，平均年齡={female_ages.mean():.2f}，SD={female_ages.std():.2f}")
-    print(f"   t={t_stat:.4f}，p={p_val:.3e}，Cohen's d={cohens_d:.4f}")
+    print(f"   t({welch_df})={t_stat:.4f}，p={p_val:.3e}，Cohen's d={cohens_d:.4f}")
 
     with open(CONFIG["output_dir"] / "stats_summary.json", "w", encoding="utf-8") as f:
         json.dump(stats_summary, f, ensure_ascii=False, indent=2)
