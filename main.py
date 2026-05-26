@@ -197,7 +197,7 @@ if stats_summary:
 # ═══════════════════════════════════════════════════════
 # Step 5：Folium 熱力圖
 # ═══════════════════════════════════════════════════════
-print("\n[Step 6] 空間熱力圖渲染...")
+print("\n[Step 5] 空間熱力圖渲染...")
 m = folium.Map(location=[23.6978, 120.9605], zoom_start=8)
 if len(df_clean) > 0:
     heat_data = df_clean[["lat", "lon"]].dropna().values.tolist()
@@ -208,7 +208,7 @@ print("   ✅ heatmap.html")
 # ═══════════════════════════════════════════════════════
 # Step 6：產生戰情儀表板首頁 (index.html)
 # ═══════════════════════════════════════════════════════
-print("\n[Step 7] 產生戰情室儀表板首頁...")
+print("\n[Step 6] 產生戰情室儀表板首頁...")
 stats_rows = "".join(f"<tr><td style='padding:8px; border-bottom:1px solid #ddd;'>{k}</td><td style='padding:8px; border-bottom:1px solid #ddd;'><strong>{v}</strong></td></tr>" for k, v in stats_summary.items()) if stats_summary else "<tr><td>無數據</td></tr>"
 
 html_report = f"""<!DOCTYPE html>
@@ -237,7 +237,7 @@ html_report = f"""<!DOCTYPE html>
 <body>
 <header>
   <h1>🚗 台灣交通事故大數據戰情室</h1>
-  <p>民國 115 年度 · A1/A2 主要肇事者與講習成效分析</p>
+  <p>民國 115 年度 · A1/A2 主要肇事者</p>
 </header>
 <main>
   <div class="card">
