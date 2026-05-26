@@ -221,6 +221,11 @@ stats_summary = {}
 if len(male_ages) > 1 and len(female_ages) > 1:
     t_stat, p_val = stats.ttest_ind(male_ages, female_ages, equal_var=False)
 
+    n1, n2 = len(male_ages), len(female_ages)
+    s1, s2 = male_ages.var(ddof=1), female_ages.var(ddof=1)
+    welch_df = (s1/n1 + s2/n2)**2 / ((s1/n1)**2 / (n1 - 1) + (s2/n2)**2 / (n2 - 1))
+    welch_df = round(welch_df, 1)
+
     # Cohen's d（簡化 pooled SD）
     pooled_sd = np.sqrt((male_ages.std() ** 2 + female_ages.std() ** 2) / 2)
     cohens_d  = (male_ages.mean() - female_ages.mean()) / pooled_sd
@@ -241,6 +246,7 @@ if len(male_ages) > 1 and len(female_ages) > 1:
         "男性標準差":   round(male_ages.std(), 2),
         "女性標準差":   round(female_ages.std(), 2),
         "T統計量":      round(t_stat, 4),
+        "自由度（df）": welch_df,
         "P值":          f"{p_val:.3e}",
         "顯著性":       format_pvalue(p_val),
         "Cohen's d":    round(cohens_d, 4),
