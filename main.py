@@ -192,63 +192,10 @@ if stats_summary:
     fig_table = go.Figure(data=[go.Table(header=dict(values=["<b>指標</b>", "<b>數值</b>"], fill_color="#3A86FF", font=dict(color="white")), cells=dict(values=[list(stats_summary.keys()), list(stats_summary.values())]))])
     fig_table.update_layout(title="📋 Welch's T-Test 統計摘要", height=400).write_html(str(CONFIG["output_dir"] / "stats_table.html"))
 
-# ═══════════════════════════════════════════════════════
-# Step 5：道安講習未到人數分析 (Hardcoded 無敵版)
-# ═══════════════════════════════════════════════════════
-print("\n[Step 5] 道安講習未到人數分析 (注入真實數據)...")
 
-# 🎯 捨棄讀取 CSV，直接注入你提供的真實歷史數據，徹底消滅亂碼 Bug！
-raw_absent_data = [
-    (103, 8997, 891, 3367, 252), (104, 7701, 629, 2958, 212),
-    (105, 9113, 728, 3843, 239), (106, 12803, 1064, 4875, 305),
-    (107, 14859, 1308, 5724, 360), (108, 12624, 1091, 5942, 420),
-    (109, 13031, 1299, 6472, 461), (110, 10507, 1238, 5455, 414),
-    (111, 17569, 2110, 9643, 851), (112, 27510, 3240, 16266, 1562),
-    (113, 25506, 3123, 16948, 2223)
-]
-df_absent = pd.DataFrame(raw_absent_data, columns=["年度", "機車/男性", "機車/女性", "汽車/男性", "汽車/女性"])
-df_absent["機車未到"] = df_absent["機車/男性"] + df_absent["機車/女性"]
-df_absent["汽車未到"] = df_absent["汽車/男性"] + df_absent["汽車/女性"]
-df_absent["男性未到"] = df_absent["機車/男性"] + df_absent["汽車/男性"]
-df_absent["女性未到"] = df_absent["機車/女性"] + df_absent["汽車/女性"]
-df_absent["未到人數"] = df_absent["機車未到"] + df_absent["汽車未到"]
-
-x_all = df_absent["年度"]
-
-# 🎯 關鍵修復：加入 specs 告訴 Plotly 右下角是圓餅圖 (domain)
-fig_absent = make_subplots(
-    rows=2, cols=2,
-    subplot_titles=("歷年總未到人數（含趨勢線）", "機車 vs 汽車未到人數", "男性 vs 女性未到人數", "各類別佔比（最新年度）"),
-    vertical_spacing=0.18, horizontal_spacing=0.1,
-    specs=[[{"type": "xy"}, {"type": "xy"}], [{"type": "xy"}, {"type": "domain"}]]
-)
-
-# 1. 總人數與趨勢線
-fig_absent.add_trace(go.Bar(x=x_all, y=df_absent["未到人數"], name="總未到人數", marker_color="#FF6B6B"), row=1, col=1)
-slope, intercept, r, p, se = stats.linregress(x_all, df_absent["未到人數"])
-x_line = np.linspace(x_all.min(), x_all.max(), 100)
-fig_absent.add_trace(go.Scatter(x=x_line, y=slope * x_line + intercept, mode="lines", name=f"趨勢線 (R²={r**2:.3f})", line=dict(dash="dash", color="#FF9500")), row=1, col=1)
-
-# 2. 車種對比
-fig_absent.add_trace(go.Scatter(x=x_all, y=df_absent["機車未到"], mode="lines+markers", name="機車", line=dict(color="#3A86FF")), row=1, col=2)
-fig_absent.add_trace(go.Scatter(x=x_all, y=df_absent["汽車未到"], mode="lines+markers", name="汽車", line=dict(color="#FF006E")), row=1, col=2)
-
-# 3. 性別對比
-fig_absent.add_trace(go.Scatter(x=x_all, y=df_absent["男性未到"], mode="lines+markers", name="男性", line=dict(color="#3A86FF")), row=2, col=1)
-fig_absent.add_trace(go.Scatter(x=x_all, y=df_absent["女性未到"], mode="lines+markers", name="女性", line=dict(color="#FF6B9D")), row=2, col=1)
-
-# 4. 圓餅圖
-last = df_absent.iloc[-1]
-pie_labels = ["機車/男性", "機車/女性", "汽車/男性", "汽車/女性"]
-pie_values = [last["機車/男性"], last["機車/女性"], last["汽車/男性"], last["汽車/女性"]]
-fig_absent.add_trace(go.Pie(labels=pie_labels, values=pie_values, hole=0.4, name="佔比"), row=2, col=2)
-
-fig_absent.update_layout(title=f"🚨 道安講習阻嚇力驗證：歷年未到人數趨勢分析", template=PLOTLY_THEME, height=750)
-fig_absent.write_html(str(CONFIG["output_dir"] / "absent_trend.html"))
-print("   ✅ absent_trend.html (包含圓餅圖與趨勢線)")
 
 # ═══════════════════════════════════════════════════════
-# Step 6：Folium 熱力圖
+# Step 5：Folium 熱力圖
 # ═══════════════════════════════════════════════════════
 print("\n[Step 6] 空間熱力圖渲染...")
 m = folium.Map(location=[23.6978, 120.9605], zoom_start=8)
@@ -259,7 +206,7 @@ m.save(str(CONFIG["output_dir"] / "heatmap.html"))
 print("   ✅ heatmap.html")
 
 # ═══════════════════════════════════════════════════════
-# Step 7：產生戰情儀表板首頁 (index.html)
+# Step 6：產生戰情儀表板首頁 (index.html)
 # ═══════════════════════════════════════════════════════
 print("\n[Step 7] 產生戰情室儀表板首頁...")
 stats_rows = "".join(f"<tr><td style='padding:8px; border-bottom:1px solid #ddd;'>{k}</td><td style='padding:8px; border-bottom:1px solid #ddd;'><strong>{v}</strong></td></tr>" for k, v in stats_summary.items()) if stats_summary else "<tr><td>無數據</td></tr>"
@@ -300,7 +247,6 @@ html_report = f"""<!DOCTYPE html>
       <a class="nav-btn" href="age_distribution.html">🎻 年齡風險分布</a>
       <a class="nav-btn" href="heatmap_age_month.html">🗓 年齡與月份熱圖</a>
       <a class="nav-btn" href="monthly_trend.html">📈 肇事趨勢折線圖</a>
-      <a class="nav-btn" href="absent_trend.html">🚨 講習阻嚇力驗證</a>
       <a class="nav-btn primary" href="heatmap.html">🗺️ 台灣肇事熱力圖</a>
     </div>
   </div>
