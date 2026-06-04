@@ -432,7 +432,7 @@ html_report = f"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>台灣交通事故分析報告</title>
+<title>台灣交通事故分析報告(demo)</title>
 <style>
   body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background:#F4F7FF; margin:0; color:#333; }}
   header {{ background:linear-gradient(135deg,#3A86FF 0%,#0056b3 100%); color:white; padding:2.5rem 1rem; text-align:center; box-shadow:0 4px 6px rgba(0,0,0,.1); }}
