@@ -109,6 +109,20 @@ GitHub Actions 會在每次 push 到 `main` 或每日排程時自動執行三個
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml       # CI/CD 流水線
+├──web
+│  └── cause_analysis.html
+│  └── dashboard_data.json
+│  └── heatmap.html
+│  └── heatmap_age_month.html
+│  └── index.html
+│  └── monthly_trend.html
+│  └── pipeline_stats.html
+│  └── style.css
+│  └── age_distribution.html
+│  └── app.js
+├──aws
+│  └── cloudformation.yml
+│  └── iam-oidc-setup.md
 ├── output/                  # ETL 產出（git ignored）
 └── CLOUD_ARCHITECTURE.md    # 雲端架構說明
 ```
