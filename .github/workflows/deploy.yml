@@ -4,20 +4,17 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '0 2 1 * *'
-  workflow_dispatch:
+    - cron: '0 2 1 * *' # 每月1號的 UTC 02:00 (台灣時間 10:00) 自動執行
+  workflow_dispatch:   # 允許手動點擊按鈕觸發
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write   # 這是 OIDC 登入 AWS 和 GitHub Pages 都必須要用的權限！
+  contents: write      # 允許讀寫儲存庫內容
+  pages: write         # 部署 GitHub Pages 必備權限
+  id-token: write      # OIDC 登入 AWS 必備權限
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: 📥 Checkout
@@ -54,19 +51,17 @@ jobs:
       - name: 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # 👈 需修改：請填入你在 iam-oidc-setup.md 中建立的 AWS Role ARN
+          # 💡 提示：請至 AWS IAM 檢查您的 OIDC Role，並將下方的 12 碼帳號與角色名稱換成實際的
           role-to-assume: arn:aws:iam::123456789012:role/你的-github-actions-role
-          # 👈 需修改：確認你的 AWS 區域 (例如東京就是 ap-northeast-1)
-          aws-region: ap-northeast-1
+          # 💡 核心修正：根據您的 S3 機房，區域請填入雪梨節點 ap-southeast-2
+          aws-region: ap-southeast-2
 
       - name: ☁️ Deploy to AWS S3
         run: |
-          # 👈 需修改：把 "你的-s3-bucket-名稱" 換成真實的 Bucket 名稱
-          # --delete 參數確保 S3 會把舊檔案刪除，與最新結果完全同步
-          aws s3 sync pages_deploy/ s3://你的-s3-bucket-名稱 --delete
+          # 💡 核心修正：已自動替換為您成功建立的 Bucket 名稱 "my-project-0604"
+          aws s3 sync pages_deploy/ s3://my-project-0604 --delete
 
       - name: 🔄 Invalidate CloudFront Cache
         run: |
-          # 👈 需修改：填入你的 CloudFront 分配 ID (Distribution ID，通常是一串大寫英數字)
-          # 這樣就不用在網址後面加 ?v=1 這種怪招了，自動清除 CDN 快取！
-          aws cloudfront create-invalidation --distribution-id E1ABCD2EFGH3IJ --paths "/*"
+          # 💡 提示：請將下方 "E1CTGVABV9XOHG" 替換為您在 CloudFront 列表中看到的真實 Distribution ID
+          aws cloudfront create-invalidation --distribution-id E1CTGVABV9XOHG --paths "/*"
