@@ -374,6 +374,24 @@ if stats_summary:
     fig_stat.write_html(str(CONFIG["output_dir"] / "stats_table.html"))
     print("   ✅ pipeline_stats.html / stats_table.html")
 
+# ── [新增] 匯出前端互動所需之純資料 (JSON) ──────────────────────
+    print("\n[Step 4.5] 打包前端互動資料庫 (JSON)...")
+    
+    # 將 Pandas DataFrame 轉為前端好讀取的字典格式 (records)
+    dashboard_data = {
+        "metadata": {
+            "update_time": RUN_TIMESTAMP,
+            "target_years": CONFIG["target_roc_years"]
+        },
+        "stats_summary": stats_summary,
+        "cause_data": cause_df.to_dict(orient="records"),       # 包含肇因、性別、件數
+        "monthly_trend": monthly_df.to_dict(orient="records")   # 包含月份、性別、件數
+    }
+
+    # 存檔至 output 資料夾
+    with open(CONFIG["output_dir"] / "dashboard_data.json", "w", encoding="utf-8") as f:
+        json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
+    print("   ✅ dashboard_data.json (供前端 JS 抓取的資料庫！)")
 
 # ═══════════════════════════════════════════════════════
 # Step 5：Folium 空間熱力圖
@@ -401,7 +419,7 @@ if len(df_clean) > 0:
 m.save(str(CONFIG["output_dir"] / "heatmap.html"))
 print("   ✅ heatmap.html")
 
-
+"""
 # ═══════════════════════════════════════════════════════
 # Step 6：產生戰情儀表板首頁 (index.html)
 # ═══════════════════════════════════════════════════════
@@ -426,7 +444,7 @@ def build_table_rows(keys, data):
 stat_keys = [k for k in stats_summary if k not in engineering_keys] if stats_summary else []
 eng_rows  = build_table_rows(engineering_keys, stats_summary) if stats_summary else "<tr><td colspan='2'>無數據</td></tr>"
 stat_rows = build_table_rows(stat_keys, stats_summary)         if stats_summary else "<tr><td colspan='2'>無數據</td></tr>"
-
+"""
 html_report = f"""<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
