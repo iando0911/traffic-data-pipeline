@@ -1,0 +1,9 @@
+# .dockerignore
+.git
+.github
+output/
+raw_cache/
+__pycache__/
+*.pyc
+.env
+*.md
