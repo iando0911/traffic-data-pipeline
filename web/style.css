@@ -1,0 +1,20 @@
+body { font-family: 'Segoe UI', Tahoma, sans-serif; background:#F4F7FF; margin:0; color:#333; }
+header { background:linear-gradient(135deg,#3A86FF 0%,#0056b3 100%); color:white; padding:2.5rem 1rem; text-align:center; box-shadow:0 4px 6px rgba(0,0,0,.1); }
+header h1 { margin:0 0 8px; font-size:2.2rem; }
+header p { margin:0; opacity:.9; font-size:1rem; }
+.timestamp { display:inline-block; margin-top:10px; background:rgba(255,255,255,.2); padding:4px 14px; border-radius:20px; font-size:.88rem; }
+main { max-width:1000px; margin:2rem auto; padding:0 1rem; }
+.card { background:white; padding:2rem; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,.05); margin-bottom:2rem; }
+h2 { color:#3A86FF; border-left:4px solid #3A86FF; padding-left:10px; margin-top:0; }
+
+/* 統計數字卡片排版 */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; text-align: center; }
+.stat-box { padding: 1rem; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; }
+.stat-box h3 { margin: 0 0 10px; font-size: 1rem; color: #6c757d; }
+.big-number { margin: 0; font-size: 2rem; font-weight: bold; color: #3A86FF; }
+/* 按鈕排版 */
+.btn-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-top:1.5rem; }
+.nav-btn { display:flex; align-items:center; justify-content:center; padding:1rem; background:white; border:2px solid #3A86FF; color:#3A86FF; text-decoration:none; border-radius:8px; font-weight:bold; transition:all .2s; }
+.nav-btn:hover { background:#3A86FF; color:white; transform:translateY(-2px); box-shadow:0 4px 8px rgba(58,134,255,.3); }
+.nav-btn.primary { background:#FF006E; border-color:#FF006E; color:white; }
+.nav-btn.primary:hover { background:#d9005d; }

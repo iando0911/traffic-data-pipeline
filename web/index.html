@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>台灣交通事故動態戰情室</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>🚗 台灣交通事故動態戰情室</h1>
+        <p>A1/A2 主要肇事者大數據分析</p>
+        <span class="timestamp" id="update-time">資料載入中...</span>
+    </header>
+
+    <main>
+        <div class="card">
+            <h2>📊 進階分析圖表 (Python 深度渲染)</h2>
+            <div class="btn-grid">
+                <a class="nav-btn" href="age_distribution.html" target="_blank">🎻 年齡風險分布</a>
+                <a class="nav-btn" href="heatmap_age_month.html" target="_blank">🗓 年齡與月份熱圖</a>
+                <a class="nav-btn" href="pipeline_stats.html" target="_blank">🔧 管線效能報告</a>
+                <a class="nav-btn" href="stats_table.html" target="_blank">📋 T-Test 統計摘要</a>
+                <a class="nav-btn primary" href="heatmap.html" target="_blank">🗺️ 台灣肇事熱力圖</a>
+            </div>
+        </div>
+        <div class="card summary-grid">
+            <div class="stat-box">
+                <h3>分析樣本總數</h3>
+                <p id="total-samples" class="big-number">--</p>
+            </div>
+            <div class="stat-box">
+                <h3>男性平均年齡</h3>
+                <p id="male-age" class="big-number">--</p>
+            </div>
+            <div class="stat-box">
+                <h3>女性平均年齡</h3>
+                <p id="female-age" class="big-number">--</p>
+            </div>
+        </div>
+
+        <div class="card chart-container">
+            <h2>🔍 主要肇事原因 TOP 15</h2>
+            <div id="cause-chart" style="width: 100%; height: 500px;"></div>
+        </div>
+        
+        <div class="card chart-container">
+            <h2>📈 各月份肇事趨勢</h2>
+            <div id="trend-chart" style="width: 100%; height: 400px;"></div>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
