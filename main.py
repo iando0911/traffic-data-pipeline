@@ -4,7 +4,7 @@
   1. 加入缺失率統計（座標、年齡／性別）
   2. Cohen's d 存入 stats_summary
   3. 所有工程效能指標統一輸出至 JSON 與儀表板
-  4. 圖表說明加入資料截止日期，區分快照與即時數據
+  4. 移除舊版 Python 寫死的 index.html 產出邏輯，改為純資料 JSON 輸出 (CSR 架構)
 """
 
 import pandas as pd
@@ -68,11 +68,9 @@ def safe_read_csv(source, label="檔案") -> pd.DataFrame | None:
     print(f"      ⚠️  {label}：所有編碼均失敗，略過")
     return None
 
-
 def roc_to_ad(year_series: pd.Series) -> pd.Series:
     year = pd.to_numeric(year_series, errors="coerce")
     return year.where(year >= 200, year + 1911)
-
 
 def format_pvalue(p: float) -> str:
     if p < 0.001:
@@ -418,132 +416,6 @@ if len(df_clean) > 0:
 
 m.save(str(CONFIG["output_dir"] / "heatmap.html"))
 print("   ✅ heatmap.html")
-
-"""
-# ═══════════════════════════════════════════════════════
-# Step 6：產生戰情儀表板首頁 (index.html)
-# ═══════════════════════════════════════════════════════
-print("\n[Step 6] 產生戰情室儀表板首頁...")
-
-# 工程指標 vs 統計指標分開渲染
-engineering_keys = ["資料截止日期", "原始年度筆數", "第一當事者純化筆數",
-                    "座標缺失率", "年齡／性別缺值率", "最終可用樣本數"]
-
-def build_table_rows(keys, data):
-    rows = ""
-    for i, k in enumerate(keys):
-        bg = "#f4f7ff" if i % 2 == 0 else "white"
-        rows += (
-            f"<tr style='background:{bg}'>"
-            f"<td style='padding:9px 12px;border-bottom:1px solid #e8eaf6;'>{k}</td>"
-            f"<td style='padding:9px 12px;border-bottom:1px solid #e8eaf6;'><strong>{data.get(k, '—')}</strong></td>"
-            f"</tr>"
-        )
-    return rows
-
-stat_keys = [k for k in stats_summary if k not in engineering_keys] if stats_summary else []
-eng_rows  = build_table_rows(engineering_keys, stats_summary) if stats_summary else "<tr><td colspan='2'>無數據</td></tr>"
-stat_rows = build_table_rows(stat_keys, stats_summary)         if stats_summary else "<tr><td colspan='2'>無數據</td></tr>"
-"""
-html_report = f"""<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>台灣交通事故分析報告(demo)</title>
-<style>
-  body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background:#F4F7FF; margin:0; color:#333; }}
-  header {{ background:linear-gradient(135deg,#3A86FF 0%,#0056b3 100%); color:white; padding:2.5rem 1rem; text-align:center; box-shadow:0 4px 6px rgba(0,0,0,.1); }}
-  header h1 {{ margin:0 0 8px; font-size:2.2rem; }}
-  header p  {{ margin:0; opacity:.9; font-size:1rem; }}
-  .timestamp {{ display:inline-block; margin-top:10px; background:rgba(255,255,255,.2); padding:4px 14px; border-radius:20px; font-size:.88rem; }}
-  main {{ max-width:1000px; margin:2rem auto; padding:0 1rem; }}
-  .card {{ background:white; padding:2rem; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,.05); margin-bottom:2rem; }}
-  h2 {{ color:#3A86FF; border-left:4px solid #3A86FF; padding-left:10px; margin-top:0; }}
-  .snapshot-note {{ background:#fff8e1; border-left:4px solid #ffc107; padding:10px 14px; border-radius:4px; font-size:.9rem; color:#7a6000; margin-bottom:1.2rem; }}
-  .btn-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-top:1.5rem; }}
-  .nav-btn {{ display:flex; align-items:center; justify-content:center; padding:1rem; background:white; border:2px solid #3A86FF; color:#3A86FF; text-decoration:none; border-radius:8px; font-weight:bold; transition:all .2s; }}
-  .nav-btn:hover {{ background:#3A86FF; color:white; transform:translateY(-2px); box-shadow:0 4px 8px rgba(58,134,255,.3); }}
-  .nav-btn.primary {{ background:#FF006E; border-color:#FF006E; color:white; }}
-  .nav-btn.primary:hover {{ background:#d9005d; }}
-  table {{ width:100%; border-collapse:collapse; margin-top:.8rem; }}
-  th {{ background:#3A86FF; color:white; padding:10px 12px; text-align:left; }}
-  .section-divider {{ border:none; border-top:1px solid #e8eaf6; margin:1.5rem 0; }}
-  footer {{ text-align:center; padding:2rem; color:#999; font-size:.85rem; }}
-</style>
-</head>
-<body>
-<header>
-  <h1>🚗 台灣交通事故大數據戰情室DEMO</h1>
-  <p>民國 {CONFIG['target_roc_years'][0]} 年度 · A1/A2 主要肇事者分析</p>
-  <span class="timestamp">⏱ 本次管線更新：{RUN_TIMESTAMP}</span>
-</header>
-
-<main>
-
-  <!-- 視覺化入口 -->
-  <div class="card">
-    <h2>📊 互動式分析圖表</h2>
-    <div class="snapshot-note">
-      ⚠️ 以下圖表為管線於 <strong>{RUN_TIMESTAMP}</strong> 之輸出快照，用於驗證視覺化模組之正確性。
-      資料隨 GitHub Actions 排程自動更新，各圖內均標示截止日期。
-    </div>
-    <div class="btn-grid">
-      <a class="nav-btn" href="cause_analysis.html">🔍 肇因結構分析</a>
-      <a class="nav-btn" href="age_distribution.html">🎻 年齡風險分布</a>
-      <a class="nav-btn" href="heatmap_age_month.html">🗓 年齡與月份熱圖</a>
-      <a class="nav-btn" href="monthly_trend.html">📈 肇事趨勢折線圖</a>
-      <a class="nav-btn" href="pipeline_stats.html">🔧 管線效能報告</a>
-      <a class="nav-btn" href="stats_table.html">📋 T-Test 統計摘要</a>
-      <a class="nav-btn primary" href="heatmap.html">🗺️ 台灣肇事熱力圖</a>
-    </div>
-  </div>
-
-  <!-- 管線效能指標 -->
-  <div class="card">
-    <h2>🔧 本次管線執行效能</h2>
-    <table>
-      <tr><th>效能指標</th><th>觀測值</th></tr>
-      {eng_rows}
-    </table>
-  </div>
-
-  <!-- 統計檢定 -->
-  <div class="card">
-    <h2>🔬 肇事者性別特徵檢定（Welch's T-Test）</h2>
-    <p style="color:#666;font-size:.93rem;margin-bottom:12px;">
-      本統計已透過 <code>當事者順位 == 1</code> 條件徹底過濾無辜受害者，確保樣本為主要肇事方。
-    </p>
-    <table>
-      <tr><th>統計指標</th><th>數值</th></tr>
-      {stat_rows}
-    </table>
-    <p style="color:#888;font-size:.85rem;margin-top:1rem;">
-      ⚠️ Cohen's d 屬微小效果量（|d| &lt; 0.2），統計上雖極顯著，實質年齡差異甚微。
-      詳見報告 §8.1 方法論討論。
-    </p>
-  </div>
-
-  <!-- 空間分析說明 -->
-  <div class="card">
-    <h2>🗺️ 空間熱力圖使用說明</h2>
-    <p style="color:#555;line-height:1.7;">
-      本熱力圖呈現之為<strong>事故絕對件數之地理分佈</strong>，而非各路段之相對肇事風險率。
-      受限於開放資料缺乏交通流量暴露基數（Exposure Data），高強度區域不可避免地向都市人口稠密區傾斜。
-      如需進行真實風險比較，需於後續研究整合車流量資料進行暴露率校正。
-    </p>
-  </div>
-
-</main>
-<footer>
-  內政部警政署交通事故資料庫 · 全自動化資料管線 v2.1 · 最後更新：{RUN_TIMESTAMP}
-</footer>
-</body>
-</html>
-"""
-
-(CONFIG["output_dir"] / "index.html").write_text(html_report, encoding="utf-8")
-print("   ✅ index.html（戰情儀表板首頁）")
 
 print("\n" + "=" * 60)
 print("🚀 管線 v2.1 執行完畢！")
