@@ -456,7 +456,7 @@ html_report = f"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>🚗 台灣交通事故大數據戰情室</h1>
+  <h1>🚗 台灣交通事故大數據戰情室DEMO</h1>
   <p>民國 {CONFIG['target_roc_years'][0]} 年度 · A1/A2 主要肇事者分析</p>
   <span class="timestamp">⏱ 本次管線更新：{RUN_TIMESTAMP}</span>
 </header>
