@@ -84,7 +84,7 @@ jobs:
       - name: ☁️ Sync to S3
         run: |
           tar -xvf _site/artifact.tar -C _site/
-          aws s3 sync _site/ s3://traffic-dashboard-bucket --delete
+          aws s3 sync _site/ s3://my-project-0604 --delete
 
       - name: 🔄 Invalidate CloudFront
         run: |
