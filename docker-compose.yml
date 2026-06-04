@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime          # 使用 runtime stage（不含編譯工具）
+    image: traffic-etl:local
+    container_name: traffic-etl
+    environment:
+      - TARGET_YEAR=115        # 民國年份
+      - OUTPUT_DIR=/app/output
+    volumes:
+      # 將容器內 /app/output 掛載到本機 ./output，方便查看產出物
+      - ./output:/app/output
+    # 若本機已有快取的原始資料，可掛載進去跳過下載
+    # - ./data:/app/data
+
+  # ── 選用：本機預覽儀表板 ──
+  preview:
+    image: nginx:alpine
+    container_name: traffic-preview
+    ports:
+      - "8080:80"
+    volumes:
+      - ./output:/usr/share/nginx/html:ro
+    depends_on:
+      etl:
+        condition: service_completed_successfully
+    profiles:
+      - preview    # 僅在 `docker compose --profile preview up` 時啟動

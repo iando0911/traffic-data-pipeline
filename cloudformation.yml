@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  台灣交通事故分析儀表板
+  資源：S3 Bucket（靜態網站） + CloudFront CDN
+  一次部署，永久使用。
+
+# ── 可自訂參數 ──────────────────────────────────
+Parameters:
+  ProjectName:
+    Type: String
+    Default: traffic-dashboard
+    Description: 資源名稱前綴，影響 S3 Bucket 名稱
+  PriceClass:
+    Type: String
+    Default: PriceClass_200        # 美洲 + 歐洲 + 亞太（含台灣）
+    AllowedValues:
+      - PriceClass_100             # 只有美洲 + 歐洲（最便宜）
+      - PriceClass_200             # 加亞太（台灣使用者體驗更好）
+      - PriceClass_All             # 全球（最貴）
+
+# ── 資源定義 ─────────────────────────────────────
+Resources:
+
+  # ── 1. S3 Bucket（不開放公開存取，透過 CloudFront OAC 存取）
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
+      # 封鎖所有公開存取
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled            # 保留版本，方便回滾
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30   # 30 天後刪除舊版本，節省儲存費用
+
+  # ── 2. Origin Access Control（OAC）：讓 CloudFront 安全讀取 S3
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ── 3. S3 Bucket Policy：只允許 CloudFront 讀取
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${DashboardBucket}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  # ── 4. CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${ProjectName} Dashboard CDN"
+        DefaultRootObject: index.html
+        PriceClass: !Ref PriceClass
+        HttpVersion: http2and3      # 支援 HTTP/3 (QUIC)，更快
+
+        # 來源：S3 Bucket
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""   # OAC 模式下留空
+
+        # 預設快取行為
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https   # 強制 HTTPS
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          # HTML 不快取（每次取最新），其他靜態資源快取 1 小時
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # SecurityHeaders
+
+        # SPA 404 → index.html（若為 Single Page App 需要）
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+
+# ── 輸出（部署完成後顯示）──────────────────────────
+Outputs:
+  S3BucketName:
+    Description: "S3 Bucket 名稱（填入 GitHub Secret: S3_BUCKET_NAME）"
+    Value: !Ref DashboardBucket
+    Export:
+      Name: !Sub "${ProjectName}-bucket-name"
+
+  CloudFrontDistributionId:
+    Description: "CloudFront Distribution ID（填入 GitHub Secret: CLOUDFRONT_DIST_ID）"
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub "${ProjectName}-cf-dist-id"
+
+  CloudFrontDomain:
+    Description: "儀表板公開網址（填入 GitHub Secret: CLOUDFRONT_DOMAIN）"
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub "${ProjectName}-cf-domain"
