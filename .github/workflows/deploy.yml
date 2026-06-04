@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
   pages: write
-  id-token: write
+  id-token: write   # 這是 OIDC 登入 AWS 和 GitHub Pages 都必須要用的權限！
 
 jobs:
   build-and-deploy:
@@ -40,6 +40,7 @@ jobs:
           cp output/*.html pages_deploy/
           cp output/*.json pages_deploy/
 
+      # ─── 第一階段：部署到 GitHub Pages ─────────────────────────
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -48,3 +49,24 @@ jobs:
       - name: 🌐 Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # ─── 第二階段：部署到 AWS S3 + CloudFront ─────────────────
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # 👈 需修改：請填入你在 iam-oidc-setup.md 中建立的 AWS Role ARN
+          role-to-assume: arn:aws:iam::123456789012:role/你的-github-actions-role
+          # 👈 需修改：確認你的 AWS 區域 (例如東京就是 ap-northeast-1)
+          aws-region: ap-northeast-1
+
+      - name: ☁️ Deploy to AWS S3
+        run: |
+          # 👈 需修改：把 "你的-s3-bucket-名稱" 換成真實的 Bucket 名稱
+          # --delete 參數確保 S3 會把舊檔案刪除，與最新結果完全同步
+          aws s3 sync pages_deploy/ s3://你的-s3-bucket-名稱 --delete
+
+      - name: 🔄 Invalidate CloudFront Cache
+        run: |
+          # 👈 需修改：填入你的 CloudFront 分配 ID (Distribution ID，通常是一串大寫英數字)
+          # 這樣就不用在網址後面加 ?v=1 這種怪招了，自動清除 CDN 快取！
+          aws cloudfront create-invalidation --distribution-id E1ABCD2EFGH3IJ --paths "/*"
