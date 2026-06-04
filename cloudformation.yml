@@ -24,6 +24,8 @@ Resources:
   # ── 1. S3 Bucket（不開放公開存取，透過 CloudFront OAC 存取）
   DashboardBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain         # 防止 stack 誤刪時資料消失，需手動刪除 Bucket
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
       # 封鎖所有公開存取
@@ -42,6 +44,7 @@ Resources:
               NoncurrentDays: 30   # 30 天後刪除舊版本，節省儲存費用
 
   # ── 2. Origin Access Control（OAC）：讓 CloudFront 安全讀取 S3
+  #       OAC 是 OAI（Origin Access Identity）的新世代替代方案，使用 SigV4 簽署
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -86,17 +89,24 @@ Resources:
             DomainName: !GetAtt DashboardBucket.RegionalDomainName
             OriginAccessControlId: !GetAtt OriginAccessControl.Id
             S3OriginConfig:
-              OriginAccessIdentity: ""   # OAC 模式下留空
+              OriginAccessIdentity: ""   # OAC 模式下留空（OAI 欄位保留但不填）
 
         # 預設快取行為
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https   # 強制 HTTPS
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
-          # HTML 不快取（每次取最新），其他靜態資源快取 1 小時
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # SecurityHeaders
+          # AWS 託管快取策略 ID 說明：
+          #   658327ea-f89d-4fab-a63d-7e88639e58f6 → CachingOptimized
+          #     預設 TTL 86400s（1天），最大 31536000s（1年），壓縮啟用
+          #     適合靜態資源（JS、CSS、圖片），不適合頻繁更新的 HTML
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # AWS 託管回應標頭策略 ID 說明：
+          #   67f7725c-6f97-4210-82d7-5512b31e9d03 → SecurityHeadersPolicy
+          #     自動加入 Strict-Transport-Security、X-Frame-Options、
+          #     X-Content-Type-Options、Referrer-Policy 等安全標頭
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
 
-        # SPA 404 → index.html（若為 Single Page App 需要）
+        # SPA 404/403 → index.html（S3 存取拒絕時也導回首頁）
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
