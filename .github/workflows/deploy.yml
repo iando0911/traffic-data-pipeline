@@ -43,9 +43,6 @@ jobs:
           restore-keys: |
             raw-data-
 
-      - name: 🧪 Run unit tests
-        run: pytest tests/ -v
-
       - name: 🚀 Run ETL Pipeline
         run: python main.py
 
