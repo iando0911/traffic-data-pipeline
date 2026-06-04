@@ -19,12 +19,12 @@
 │  │  ┌────────────────────────────┐  │   │
 │  │  │  Python 3.11-slim (runtime)│  │   │
 │  │  │                            │  │   │
-│  │  │  ① requests → 警政署 API   │  │   │
-│  │  │  ② BytesIO 記憶體解壓縮    │  │   │
-│  │  │  ③ Big5/UTF-8 編碼容錯    │  │   │
-│  │  │  ④ 第一當事者特徵純化      │  │   │
-│  │  │  ⑤ Welch T + Cohen's d    │  │   │
-│  │  │  ⑥ Folium + Plotly 渲染   │  │   │
+│  │  │  ① requests → 警政署 API    │  │   │
+│  │  │  ② BytesIO 記憶體解壓縮      │  │   │
+│  │  │  ③ Big5/UTF-8 編碼容錯      │  │   │
+│  │  │  ④ 第一當事者特徵純化        │  │   │
+│  │  │  ⑤ Welch T + Cohen's d     │  │   │
+│  │  │  ⑥ Folium + Plotly 渲染     │  │   │
 │  │  └────────┬───────────────────┘  │   │
 │  │           │ volume mount         │   │
 │  └───────────┼──────────────────────┘   │
@@ -72,10 +72,10 @@ docker run --rm -e TARGET_YEAR=114 \
      ▼
 ┌──────────────────────────────────────┐
 │   AWS CloudFront (CDN)               │
-│   - 全球邊緣節點（含亞太）            │
+│   - 全球邊緣節點（含亞太）             │
 │   - 強制 HTTPS                       │
 │   - HTTP/3 (QUIC) 支援               │
-│   - Cache-Control 精細控制           │
+│   - Cache-Control 精細控制            │
 └────────────────┬─────────────────────┘
                  │ Origin (OAC)
                  ▼
