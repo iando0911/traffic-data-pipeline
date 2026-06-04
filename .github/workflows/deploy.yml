@@ -1,4 +1,4 @@
-# 台灣交通事故大數據分析管線 - 雲端部署工作流 v2.1
+# 台灣交通事故大數據分析管線 - 雲端部署工作流 v2.2
 name: Traffic Data Auto Pipeline
 
 on:
@@ -34,6 +34,15 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
+      # ── 原始資料快取（API 暫時下線時 fallback 到上次快取）
+      - name: 📂 Restore raw data cache
+        uses: actions/cache@v4
+        with:
+          path: raw_cache/
+          key: raw-data-${{ github.run_id }}
+          restore-keys: |
+            raw-data-
+
       - name: 🚀 Run ETL Pipeline
         run: python main.py
 
@@ -49,6 +58,16 @@ jobs:
         with:
           path: '_site'
 
+      # ── ETL 失敗時發送通知
+      - name: 🚨 Notify on failure
+        if: failure()
+        run: |
+          echo "ETL Pipeline 失敗，請至 GitHub Actions 查看：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # 若有設定 SLACK_WEBHOOK_URL，可啟用下方通知：
+          # curl -s -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+          #   -H 'Content-type: application/json' \
+          #   --data "{\"text\":\"❌ Traffic Pipeline 失敗：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
   deploy:
     environment:
       name: github-pages
@@ -59,6 +78,9 @@ jobs:
       - name: 🚀 Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: ✅ Print GitHub Pages URL
+        run: echo "GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
 
   sync-aws:
     runs-on: ubuntu-latest
@@ -74,10 +96,10 @@ jobs:
       - name: 🔑 Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::743181156800:role/github-actions-deploy-role
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: 📁 Download build results
+      - name: 📁 Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: github-pages
@@ -86,15 +108,28 @@ jobs:
       - name: ☁️ Sync to S3
         run: |
           tar -xvf _site/artifact.tar -C _site/
-          aws s3 sync _site/ s3://my-project-0604 --delete
-
-          # HTML 不快取，確保使用者每次取最新版
-          aws s3 cp _site/index.html s3://my-project-0604/index.html \
+          # 靜態資源快取 1 小時
+          aws s3 sync _site/ s3://${{ secrets.S3_BUCKET_NAME }} \
+            --delete \
+            --cache-control "max-age=3600, must-revalidate"
+          # index.html 不快取，確保使用者每次取最新版
+          aws s3 cp _site/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache, no-store, must-revalidate" \
             --metadata-directive REPLACE
 
       - name: 🔄 Invalidate CloudFront
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id E67OCAJE5TI9T \
+            --distribution-id ${{ secrets.CLOUDFRONT_DIST_ID }} \
             --paths "/*"
+
+      - name: ✅ Print deployment URL
+        run: echo "AWS 部署完成：https://${{ secrets.CLOUDFRONT_DOMAIN }}"
+
+      - name: 🚨 Notify on failure
+        if: failure()
+        run: |
+          echo "AWS 部署失敗，請至 GitHub Actions 查看：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # curl -s -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+          #   -H 'Content-type: application/json' \
+          #   --data "{\"text\":\"❌ AWS 部署失敗：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
