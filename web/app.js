@@ -21,8 +21,8 @@ async function initDashboard() {
         drawTrendChart();
         
     } catch (error) {
-        console.error("無法載入資料，請確認 dashboard_data.json 是否存在:", error);
-        document.getElementById("update-time").innerText = "資料載入失敗";
+        showErrorBanner(`資料載入失敗：${error.message}，請稍後重整頁面`);
+        // 同時嘗試 fallback 到本地快取資料
     }
 }
 
