@@ -63,5 +63,4 @@ jobs:
 
       - name: 🔄 Invalidate CloudFront Cache
         run: |
-          # 💡 提示：請將下方 "E1CTGVABV9XOHG" 替換為您在 CloudFront 列表中看到的真實 Distribution ID
-          aws cloudfront create-invalidation --distribution-id E1CTGVABV9XOHG --paths "/*"
+          aws cloudfront create-invalidation --distribution-id E67OCAJE5TI9T --paths "/*"
