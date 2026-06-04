@@ -43,6 +43,9 @@ jobs:
           restore-keys: |
             raw-data-
 
+      - name: 🧪 Run unit tests
+        run: pytest tests/ -v
+
       - name: 🚀 Run ETL Pipeline
         run: python main.py
 
@@ -98,7 +101,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: us-east-1
-
+      
       - name: 📁 Download build artifact
         uses: actions/download-artifact@v4
         with:
