@@ -84,4 +84,5 @@ docker run --rm \
 │   └── iam-oidc-setup.md    # AWS OIDC 認證設定說明
 ├── output/                  # 📂 ETL 產出（git ignored，含 HTML/JSON 與靜態檔）
 └── CLOUD_ARCHITECTURE.md    # 雲端架構說明
+
 資料來源內政部警政署交通事故資料（A1/A2 類），透過政府資料開放平臺 API 取得。資料依民國年份篩選，預設分析最近一個完整年度（民國 115 年）。
