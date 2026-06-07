@@ -1,6 +1,6 @@
 """
-台灣交通事故大數據分析管線 v2.4
-修正項目（累積自 v2.3）：
+台灣交通事故大數據分析管線 v2.5
+修正項目（累積自 v2.4）：
   1. 加入缺失率統計（座標、年齡／性別）
   2. Cohen's d 存入 stats_summary
   3. 所有工程效能指標統一輸出至 JSON 與儀表板
@@ -18,6 +18,9 @@
  13. [v2.4] 修正日期解析 bug：混合格式（7碼民國 + 其他）時非7碼行不會漏解析
  14. [v2.4] ETL 結束後自動將 web/ 靜態文件複製到 output/，確保部署完整性
  15. [v2.4] 將執行邏輯封裝至 run_pipeline()，加入 __name__ == "__main__" 防護，利於單元測試
+  ── v2.5 修正 ──────────────────────────────────────────────
+ 16. [v2.5] 修正動態爬蟲：改用解析政府 API JSON 中的 downloadURL 欄位，避免被網域更換卡死。
+ 17. [v2.5] 修正解壓縮邏輯：自動過濾 ZIP 中的 schema.csv 避免資料表污染。
 """
 
 import pandas as pd
@@ -59,14 +62,7 @@ CONFIG = {
     "raw_cache_dir": Path("raw_cache"),
     # 前端靜態文件目錄（index.html / app.js / style.css）
     "web_dir": Path("web"),
-    "accident_urls": [
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download",
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download",
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/79165BC4-09EA-41D7-A1B0-C4355D9B4A31/download",
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/00E3617E-C3B2-4B0E-AC93-5A6F1B531B04/download",
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E76E38F3-D046-4E87-B759-97B746AA5B1B/download",
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/8B93B29A-644E-49C1-8056-19681D361E43/download",
-    ],
+    "accident_urls": [], # 將由動態爬蟲自動填入
     # 月份完整性：件數低於前三個月平均的此比例時標記為「不完整」
     "monthly_completeness_threshold": 0.2,
 }
@@ -123,67 +119,36 @@ def make_session() -> requests.Session:
 # ═══════════════════════════════════════════════════════
 def fetch_latest_accident_urls() -> list[str]:
     """
+    [v2.5 更新]
     動態從 data.gov.tw 取得 A1 / A2 最新下載連結。
-    優先讀官方 metadata API；若 API 結構變動，再回退掃描資料集頁面。
+    直接解析官方 API 結構中的 'downloadURL'，不再被特定網域綁死。
     """
     session = make_session()
     dynamic_urls: list[str] = []
-
+    
     # A1 / A2 資料集頁面
     dataset_ids = [12818, 13139]
-    dataset_pages = [
-        f"https://data.gov.tw/dataset/{dataset_ids[0]}",
-        f"https://data.gov.tw/dataset/{dataset_ids[1]}",
-    ]
-
-    # 警政署下載網址的特徵
-    url_pattern = re.compile(
-        r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/"
-        r"[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download"
-    )
 
     def _collect_urls(obj):
-        """遞迴掃描 JSON / dict / list 中所有符合規則的連結。"""
+        """遞迴掃描 JSON 中所有名為 downloadURL 的連結。"""
         if isinstance(obj, dict):
             for key, value in obj.items():
-                if isinstance(value, str):
-                    if url_pattern.search(value):
-                        dynamic_urls.append(value)
+                if key.lower() in ['downloadurl', 'url'] and isinstance(value, str) and value.startswith("http"):
+                    dynamic_urls.append(value)
                 else:
                     _collect_urls(value)
         elif isinstance(obj, list):
             for item in obj:
                 _collect_urls(item)
 
-    # 先走官方 API，比掃 HTML 穩定
     for ds_id in dataset_ids:
         try:
             api_url = f"https://data.gov.tw/api/v2/rest/dataset/{ds_id}"
             resp = session.get(api_url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
-
-            try:
-                payload = resp.json()
-                _collect_urls(payload)
-            except Exception:
-                # API 若不是 JSON，就退回用文字掃描
-                links = url_pattern.findall(resp.text)
-                for link in links:
-                    dynamic_urls.append(link)
-
+            _collect_urls(resp.json())
         except Exception as e:
             print(f"⚠️ 無法取得資料集 {ds_id} 的 metadata：{e}")
-
-    # 再額外掃一次資料集頁面，避免 metadata API 結構改變
-    for ds_url in dataset_pages:
-        try:
-            resp = session.get(ds_url, headers=HEADERS, timeout=15)
-            resp.raise_for_status()
-            links = url_pattern.findall(resp.text)
-            for link in links:
-                dynamic_urls.append(link)
-        except Exception as e:
-            print(f"⚠️ 無法掃描資料集頁面 {ds_url}：{e}")
 
     # 去重保序
     unique_urls = []
@@ -290,7 +255,8 @@ def run_pipeline():
         print(f"   ✅ 成功動態獲取 {len(latest_urls)} 個下載連結！")
         CONFIG["accident_urls"] = latest_urls
     else:
-        print("   ⚠️ 無法動態獲取連結，退回使用內建的靜態連結庫。")
+        print("   ⚠️ 無法動態獲取連結，請檢查網路或政府開放資料平臺狀態。")
+        raise SystemExit(1)
 
     print("\n[Step 1.5] 開始下載內政部 A1/A2 車禍資料...")
     session = make_session()
@@ -307,7 +273,8 @@ def run_pipeline():
 
             if content[:4] == b"PK\x03\x04":
                 with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    csv_files = [n for n in z.namelist() if n.lower().endswith(".csv")]
+                    # [v2.5 更新] 避開 schema.csv 以防污染主資料表
+                    csv_files = [n for n in z.namelist() if n.lower().endswith(".csv") and "schema" not in n.lower()]
                     for fname in csv_files:
                         df = safe_read_csv(z.read(fname), label=fname)
                         if df is not None:
@@ -787,7 +754,7 @@ def run_pipeline():
         dashboard_data = {
             "metadata": {
                 "update_time": RUN_TIMESTAMP,
-                "git_sha": GIT_SHA,            
+                "git_sha": GIT_SHA,             
                 "target_years": CONFIG["target_roc_years"],
                 "incomplete_months": incomplete_months,
                 "has_weekday_analysis": not weekday_df.empty,
@@ -862,7 +829,7 @@ def run_pipeline():
         print(f"   ⚠️  web/ 目錄不存在，略過靜態文件複製（部署後網站將缺少前端頁面）")
 
     print("\n" + "=" * 60)
-    print("🚀 管線 v2.4 執行完畢！")
+    print("🚀 管線 v2.5 執行完畢！")
     print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
     print(f"   Git SHA：{GIT_SHA}")
     if incomplete_months:
