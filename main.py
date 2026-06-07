@@ -1,6 +1,6 @@
 """
-台灣交通事故大數據分析管線 v2.3
-修正項目（累積自 v2.2）：
+台灣交通事故大數據分析管線 v2.4
+修正項目（累積自 v2.3）：
   1. 加入缺失率統計（座標、年齡／性別）
   2. Cohen's d 存入 stats_summary
   3. 所有工程效能指標統一輸出至 JSON 與儀表板
@@ -14,6 +14,9 @@
  10. [v2.3] 假日 vs 平日事故率分析（發生日期欄位判斷星期幾）
  11. [v2.3] 尖峰時段分析（通勤時段 vs 離峰時段）
  12. [v2.3] 年齡段事故率暴露率校正（除以各年齡段估計母體人口）
+  ── v2.4 修正 ──────────────────────────────────────────────
+ 13. [v2.4] 修正日期解析 bug：混合格式（7碼民國 + 其他）時非7碼行不會漏解析
+ 14. [v2.4] ETL 結束後自動將 web/ 靜態文件複製到 output/，確保部署完整性
 """
 
 import pandas as pd
@@ -24,6 +27,7 @@ import plotly.graph_objects as go
 import folium
 from folium.plugins import HeatMap
 import os
+import shutil
 import subprocess
 import requests
 from requests.adapters import HTTPAdapter
@@ -51,6 +55,8 @@ CONFIG = {
     "output_dir": Path(os.environ.get("OUTPUT_DIR", "output")),
     # 原始資料快取目錄（CI 環境由 actions/cache 管理）
     "raw_cache_dir": Path("raw_cache"),
+    # 前端靜態文件目錄（index.html / app.js / style.css）
+    "web_dir": Path("web"),
     "accident_urls": [
         "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download",
         "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download",
@@ -343,10 +349,13 @@ time_col = next((c for c in ["發生時間", "事故發生時間"] if c in df_cl
 if date_col:
     # 日期格式：可能為 "1140101"（民國年月日 7 碼）或 "114/01/01"
     raw_date = df_clean[date_col].astype(str).str.strip()
-    # 嘗試處理 7 碼數字型民國日期（如 1140115）
+
+    # [v2.4 修正] 先將整欄以 pandas 直接解析作為底層（處理西元格式）
+    df_clean["發生日期_parsed"] = pd.to_datetime(raw_date, errors="coerce")
+
+    # 再將 7 碼民國格式的行覆蓋寫入（優先級更高，確保正確轉換）
     mask_7digit = raw_date.str.match(r"^\d{7}$")
     if mask_7digit.any():
-        # 民國年前三碼 + 月兩碼 + 日兩碼
         roc_y = raw_date.str[:3].astype(int) + 1911
         month  = raw_date.str[3:5]
         day    = raw_date.str[5:7]
@@ -354,11 +363,7 @@ if date_col:
             roc_y.astype(str) + "-" + month + "-" + day,
             errors="coerce",
         )
-    # 非 7 碼嘗試 pandas 直接解析（西元格式）
-    df_clean["發生日期_parsed"] = df_clean.get(
-        "發生日期_parsed",
-        pd.to_datetime(raw_date, errors="coerce"),
-    )
+
     df_clean["星期類別"] = classify_weekday(df_clean["發生日期_parsed"])
 else:
     df_clean["星期類別"] = None
@@ -822,8 +827,34 @@ if len(df_clean) > 0:
 m.save(str(CONFIG["output_dir"] / "heatmap.html"))
 print("   ✅ heatmap.html")
 
+# ═══════════════════════════════════════════════════════
+# [v2.4] Step 6：複製前端靜態文件至 output/
+# 確保 index.html / app.js / style.css 隨分析圖一起部署
+# ═══════════════════════════════════════════════════════
+print("\n[Step 6] 複製前端靜態文件...")
+
+WEB_STATIC_FILES = ["index.html", "app.js", "style.css"]
+web_dir = CONFIG["web_dir"]
+
+if web_dir.exists():
+    copied, missing = [], []
+    for fname in WEB_STATIC_FILES:
+        src = web_dir / fname
+        if src.exists():
+            shutil.copy2(src, CONFIG["output_dir"] / fname)
+            copied.append(fname)
+        else:
+            missing.append(fname)
+
+    if copied:
+        print(f"   ✅ 已複製：{', '.join(copied)}")
+    if missing:
+        print(f"   ⚠️  web/ 目錄中找不到：{', '.join(missing)}（請確認文件存在）")
+else:
+    print(f"   ⚠️  web/ 目錄不存在，略過靜態文件複製（部署後網站將缺少前端頁面）")
+
 print("\n" + "=" * 60)
-print("🚀 管線 v2.3 執行完畢！")
+print("🚀 管線 v2.4 執行完畢！")
 print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
 print(f"   Git SHA：{GIT_SHA}")
 if incomplete_months:
@@ -842,7 +873,7 @@ print("=" * 60)
 #   scipy==1.13.1
 #   folium==0.17.0
 #   plotly==5.22.0
-#   kaleido==0.2.1
+#   kaleido==0.1.0.post1
 #   chardet==5.2.0
 #   jinja2==3.1.4
 #   branca==0.7.2
