@@ -11,6 +11,7 @@
 - **統計分析**：Welch's T-test、Cohen's d 效果量
 - **視覺化輸出**：肇因排行、年齡小提琴圖、月份趨勢、熱力地圖（Folium + Plotly）
 - **雙軌部署**：AWS S3 + CloudFront（正式）+ GitHub Pages（備援）
+- **工程與資安**：內建單元測試 (`pytest`) 與依賴套件漏洞掃描 (`pip-audit`)
 
 ---
 
@@ -27,6 +28,8 @@
 | `stats_table.html` | Welch's T-Test 統計摘要表 |
 | `stats_summary.json` | 所有統計指標（機器可讀） |
 | `dashboard_data.json` | 前端互動用資料庫（CSR 架構） |
+
+> **💡 提示：** 以上動態生成的檔案與前端靜態資源，於 ETL 執行完畢後皆會統一輸出至 `output/` 目錄。
 
 ---
 
@@ -54,87 +57,31 @@ docker run --rm \
   -e TARGET_YEAR=114 \
   -v $(pwd)/output:/app/output \
   traffic-etl:local
-```
-
----
-
-## 雲端部署（AWS）
-
-### 第一步：用 CloudFormation 建立基礎設施
-
-```bash
-aws cloudformation deploy \
+雲端部署（AWS）第一步：用 CloudFormation 建立基礎設施Bashaws cloudformation deploy \
   --template-file cloudformation.yml \
   --stack-name traffic-dashboard \
   --capabilities CAPABILITY_IAM
-```
-
-部署完成後，從 CloudFormation Outputs 取得以下三個值：
-
-| Output Key | 對應 GitHub Secret |
-|---|---|
-| `S3BucketName` | `S3_BUCKET_NAME` |
-| `CloudFrontDistributionId` | `CLOUDFRONT_DIST_ID` |
-| `CloudFrontDomain` | `CLOUDFRONT_DOMAIN` |
-
-### 第二步：設定 GitHub OIDC 認證
-
-在 AWS IAM 建立 OIDC Identity Provider（`token.actions.githubusercontent.com`）與對應 Role，授予 S3 與 CloudFront 操作權限，並將 Role ARN 存入：
-
-- GitHub Secret：`AWS_OIDC_ROLE_ARN`
-
-### 第三步：設定 GitHub Repository
-
-前往 `Settings → Environments`，建立 `production` 環境（可選：設定需要審核的 Protection Rules）。
-
-GitHub Actions 會在每次 push 到 `main` 或每日排程時自動執行三個 Job：
-
-```
-🐳 Build Docker & Run ETL
-  └─ ☁️  Deploy to AWS S3 + CloudFront
+部署完成後，從 CloudFormation Outputs 取得以下三個值：Output Key對應 GitHub SecretS3BucketNameS3_BUCKET_NAMECloudFrontDistributionIdCLOUDFRONT_DIST_IDCloudFrontDomainCLOUDFRONT_DOMAIN第二步：設定 GitHub OIDC 認證在 AWS IAM 建立 OIDC Identity Provider（token.actions.githubusercontent.com）與對應 Role，授予 S3 與 CloudFront 操作權限，並將 Role ARN 存入：GitHub Secret：AWS_OIDC_ROLE_ARN第三步：設定 GitHub Repository前往 Settings → Environments，建立 production 環境（可選：設定需要審核的 Protection Rules）。GitHub Actions 會在每次 push 到 main 或每日排程時自動執行三個 Job：Plaintext🐳 Build Docker & Run ETL
+  ├─ ☁️  Deploy to AWS S3 + CloudFront
   └─ 📄 Deploy to GitHub Pages
-```
-
----
-
-## 目錄結構
-
-```
-.
+目錄結構Plaintext.
 ├── main.py                  # ETL 主程式
 ├── requirements.txt         # Python 依賴
 ├── Dockerfile               # 多階段建置（builder + runtime）
 ├── docker-compose.yml       # 本機開發用
 ├── cloudformation.yml       # AWS 基礎設施（S3 + CloudFront）
 ├── .github/
+│   ├── dependabot.yml       # 🤖 Dependabot 套件更新設定
 │   └── workflows/
 │       └── deploy.yml       # CI/CD 流水線
-├──web
-│  └── cause_analysis.html
-│  └── dashboard_data.json
-│  └── heatmap.html
-│  └── heatmap_age_month.html
-│  └── index.html
-│  └── monthly_trend.html
-│  └── pipeline_stats.html
-│  └── style.css
-│  └── age_distribution.html
-│  └── app.js
-├──aws
-│  └── cloudformation.yml
-│  └── iam-oidc-setup.md
-├── output/                  # ETL 產出（git ignored）
+├── tests/                   # 🧪 單元測試目錄
+│   └── test_utils.py        # 工具函式測試檔
+├── web/                     # 🌐 前端靜態資源（僅放原始手寫檔）
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
+├── aws/
+│   └── iam-oidc-setup.md    # AWS OIDC 認證設定說明
+├── output/                  # 📂 ETL 產出（git ignored，含 HTML/JSON 與靜態檔）
 └── CLOUD_ARCHITECTURE.md    # 雲端架構說明
-```
-
----
-
-## 資料來源
-
-內政部警政署交通事故資料（A1/A2 類），透過[政府資料開放平臺](https://data.gov.tw) API 取得。資料依民國年份篩選，預設分析最近一個完整年度（民國 115 年）。
-
----
-
-## License
-
-MIT
+資料來源內政部警政署交通事故資料（A1/A2 類），透過政府資料開放平臺 API 取得。資料依民國年份篩選，預設分析最近一個完整年度（民國 115 年）。
