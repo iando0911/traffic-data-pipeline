@@ -10,25 +10,38 @@
  */
 
 // ══════════════════════════════════════════════
-// 設定（正式部署時替換這兩行為真實 AWS 端點）
+// 應用程式設定（命名空間防止全域變數衝突）
 // ══════════════════════════════════════════════
-const API_BASE_URL      = 'https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/prod';
-const COGNITO_LOGIN_URL = 'https://<COGNITO_DOMAIN>.auth.ap-northeast-1.amazoncognito.com/login'
-                        + '?client_id=<CLIENT_ID>&response_type=token'
-                        + '&scope=email+openid&redirect_uri=<CLOUDFRONT_DOMAIN>';
+const TrafficSaaS = {
+    config: {
+        API_BASE_URL: 'https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/prod',
+        COGNITO_LOGIN_URL: 'https://<COGNITO_DOMAIN>.auth.ap-northeast-1.amazoncognito.com/login'
+            + '?client_id=<CLIENT_ID>&response_type=token'
+            + '&scope=email+openid&redirect_uri=<CLOUDFRONT_DOMAIN>',
+        DEMO_EMAIL: 'demo@example.com',
+        SESSION_KEY: 'saas_demo_token'
+    },
+    state: {
+        dashboardData: null,
+        isLoggedIn: false,
+        dynamicChart: null,
+        causeChart: null,
+        trendChart: null
+    }
+};
 
-// Demo 帳號（僅供展示用，上線前移除）
-const DEMO_EMAIL    = 'demo@example.com';
-const SESSION_KEY   = 'saas_demo_token';
+// 簡化別名（向後相容）
+const API_BASE_URL = TrafficSaaS.config.API_BASE_URL;
+const COGNITO_LOGIN_URL = TrafficSaaS.config.COGNITO_LOGIN_URL;
+const DEMO_EMAIL = TrafficSaaS.config.DEMO_EMAIL;
+const SESSION_KEY = TrafficSaaS.config.SESSION_KEY;
 
-// ══════════════════════════════════════════════
-// 全域狀態
-// ══════════════════════════════════════════════
+// 簡化狀態別名
 let dashboardData = null;
-let isLoggedIn    = false;
-let dynamicChart  = null;
-let causeChart    = null;
-let trendChart    = null;
+let isLoggedIn = false;
+let dynamicChart = null;
+let causeChart = null;
+let trendChart = null;
 
 // ══════════════════════════════════════════════
 // 初始化
