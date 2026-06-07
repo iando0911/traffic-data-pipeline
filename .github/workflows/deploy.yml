@@ -1,10 +1,8 @@
 name: Traffic ETL — Docker Build → AWS S3 + GitHub Pages
 
 on:
-  # 每日 UTC 08:00（台灣時間 16:00）自動觸發
   schedule:
     - cron: "0 8 * * *"
-  # 手動觸發（可傳入年度參數）
   workflow_dispatch:
     inputs:
       target_year:
@@ -15,11 +13,10 @@ on:
     branches: [main]
 
 permissions:
-  contents: write        # GitHub Pages 部署需要
+  contents: write
   pages: write
-  id-token: write        # OIDC → AWS 認證（比長效金鑰更安全）
+  id-token: write
 
-# 同一時間只允許一個部署流程，避免競態
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
@@ -39,11 +36,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # 完整 history，確保 git rev-parse --short HEAD 可用
           fetch-depth: 0
 
       # ── 🔍 安全漏洞掃描 ──────────────────────────────────
-      - name: Set up Python for audit
+      - name: Set up Python for audit & tests
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -57,12 +53,9 @@ jobs:
       - name: 🔍 Security audit
         run: |
           pip install pip-audit
-          # 同時輸出 JSON（供後續 artifact 上傳）與人類可讀格式（顯示於 log）
           pip-audit -r requirements.txt --output json \
             --output-file pip-audit-report.json || true
           pip-audit -r requirements.txt
-        # `|| true`：有漏洞警告時不中斷流程，改由 artifact 供人工審查。
-        # 若要讓高危漏洞直接 fail CI，移除 `|| true` 即可。
 
       - name: 📋 Upload security audit report
         if: always()
@@ -84,7 +77,7 @@ jobs:
           path: test-results.xml
           retention-days: 30
 
-      # ── Docker 建置快取（加速 CI，不重複 pip install）──────
+      # ── Docker 建置快取 ───────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -96,24 +89,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      # ── 建置映像（不推送 registry，僅本機使用）────────────
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          load: true                     # 載入至本機 docker daemon
+          load: true
           tags: traffic-etl:ci
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
-      # 避免快取無限成長
       - name: Rotate build cache
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      # ── 執行 ETL，將產出物寫到 ./output ──────────────────
+      # ── 執行 ETL ─────────────────────────────────────────
       - name: Run ETL pipeline in Docker
         run: |
           mkdir -p ${{ github.workspace }}/output
@@ -124,7 +115,14 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             traffic-etl:ci
 
-      # ── 上傳產出物供後續 job 使用 ──────────────────────────
+      # ── ★ 合併 web/ 靜態檔到 output/ ────────────────────
+      # web/ 內有 index.html、app.js、style.css 等前端檔案；
+      # ETL 產出的 dashboard_data.json 等在 output/；
+      # 兩者必須合併後才能一起部署，否則 S3 上只有資料沒有前端。
+      - name: 🗂 Merge web/ static files into output/
+        run: cp -r web/. output/
+
+      # ── 上傳產出物 ────────────────────────────────────────
       - name: Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
@@ -149,14 +147,12 @@ jobs:
           name: dashboard-output
           path: output/
 
-      # ── OIDC 免金鑰認證（推薦）────────────────────────────
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: ap-northeast-1     # 東京（台灣最近）
+          aws-region: ap-northeast-1
 
-      # ── 同步至 S3（刪除舊檔、設 Cache-Control）────────────
       - name: Sync to S3
         run: |
           aws s3 sync output/ s3://${{ secrets.S3_BUCKET_NAME }}/ \
@@ -169,7 +165,6 @@ jobs:
             --cache-control "no-cache, no-store, must-revalidate" \
             --metadata-directive REPLACE
 
-      # ── 清除 CloudFront 快取，使新版立即生效 ──────────────
       - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
@@ -183,7 +178,7 @@ jobs:
 
 
   # ────────────────────────────────────────────
-  # Job 3：同時部署到 GitHub Pages（保留原有管道）
+  # Job 3：部署到 GitHub Pages（保留原有管道）
   # ────────────────────────────────────────────
   deploy-pages:
     name: "📄 Deploy to GitHub Pages"
