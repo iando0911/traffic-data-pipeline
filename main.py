@@ -39,6 +39,7 @@ import zipfile
 import json
 from pathlib import Path
 from datetime import datetime
+import re
 
 warnings.filterwarnings("ignore")
 
@@ -120,6 +121,80 @@ def make_session() -> requests.Session:
 # ═══════════════════════════════════════════════════════
 # 工具函數
 # ═══════════════════════════════════════════════════════
+def fetch_latest_accident_urls() -> list[str]:
+    """
+    動態從 data.gov.tw 取得 A1 / A2 最新下載連結。
+    優先讀官方 metadata API；若 API 結構變動，再回退掃描資料集頁面。
+    """
+    session = make_session()
+    dynamic_urls: list[str] = []
+
+    # A1 / A2 資料集頁面
+    dataset_ids = [12818, 13139]
+    dataset_pages = [
+        f"https://data.gov.tw/dataset/{dataset_ids[0]}",
+        f"https://data.gov.tw/dataset/{dataset_ids[1]}",
+    ]
+
+    # 警政署下載網址的特徵
+    url_pattern = re.compile(
+        r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/"
+        r"[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download"
+    )
+
+    def _collect_urls(obj):
+        """遞迴掃描 JSON / dict / list 中所有符合規則的連結。"""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, str):
+                    if url_pattern.search(value):
+                        dynamic_urls.append(value)
+                else:
+                    _collect_urls(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                _collect_urls(item)
+
+    # 先走官方 API，比掃 HTML 穩定
+    for ds_id in dataset_ids:
+        try:
+            api_url = f"https://data.gov.tw/api/v2/rest/dataset/{ds_id}"
+            resp = session.get(api_url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+
+            try:
+                payload = resp.json()
+                _collect_urls(payload)
+            except Exception:
+                # API 若不是 JSON，就退回用文字掃描
+                links = url_pattern.findall(resp.text)
+                for link in links:
+                    dynamic_urls.append(link)
+
+        except Exception as e:
+            print(f"⚠️ 無法取得資料集 {ds_id} 的 metadata：{e}")
+
+    # 再額外掃一次資料集頁面，避免 metadata API 結構改變
+    for ds_url in dataset_pages:
+        try:
+            resp = session.get(ds_url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            links = url_pattern.findall(resp.text)
+            for link in links:
+                dynamic_urls.append(link)
+        except Exception as e:
+            print(f"⚠️ 無法掃描資料集頁面 {ds_url}：{e}")
+
+    # 去重保序
+    unique_urls = []
+    seen = set()
+    for u in dynamic_urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    return unique_urls
+
 def safe_read_csv(source, label="檔案") -> pd.DataFrame | None:
     for enc in ["utf-8", "cp950", "big5"]:
         try:
@@ -203,12 +278,21 @@ POPULATION_SOURCE = "國發會人口推估 2026（中推估），靜態嵌入，
 # ═══════════════════════════════════════════════════════
 def run_pipeline():
     # ═══════════════════════════════════════════════════════
-    # Step 1：自動化 ETL（含重試 + 快取 fallback）
+    # Step 1：自動化 ETL（含動態爬蟲 + 重試 + 快取 fallback）
     # ═══════════════════════════════════════════════════════
     print("=" * 60)
-    print("[Step 1] 啟動 ETL 管線：下載內政部 A1/A2 車禍資料...")
+    print("[Step 1] 啟動 ETL 管線：動態獲取最新下載連結...")
     print("=" * 60)
 
+    # 先動態抓取 A1 / A2 最新連結
+    latest_urls = fetch_latest_accident_urls()
+    if latest_urls:
+        print(f"   ✅ 成功動態獲取 {len(latest_urls)} 個下載連結！")
+        CONFIG["accident_urls"] = latest_urls
+    else:
+        print("   ⚠️ 無法動態獲取連結，退回使用內建的靜態連結庫。")
+
+    print("\n[Step 1.5] 開始下載內政部 A1/A2 車禍資料...")
     session = make_session()
     dfs = []
     download_success_count = 0
@@ -255,7 +339,6 @@ def run_pipeline():
 
     df_acc = pd.concat(dfs, ignore_index=True)
     print(f"\n✅ 原始資料合併完成：共 {len(df_acc):,} 筆")
-
 
     # ═══════════════════════════════════════════════════════
     # Step 2：特徵工程與資料清洗（含缺失率統計）
