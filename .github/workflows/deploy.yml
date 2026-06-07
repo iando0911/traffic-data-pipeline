@@ -53,6 +53,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest  # <--- 專為 CI 環境安裝測試框架
 
       - name: 🔍 Security audit
         run: |
@@ -61,8 +62,6 @@ jobs:
           pip-audit -r requirements.txt --output json \
             --output-file pip-audit-report.json || true
           pip-audit -r requirements.txt || true
-        # `|| true`：有漏洞警告時不中斷流程，改由 artifact 供人工審查。
-        # 若要讓高危漏洞直接 fail CI，移除 `|| true` 即可。
 
       - name: 📋 Upload security audit report
         if: always()
@@ -76,7 +75,8 @@ jobs:
       - name: 🧪 Run unit tests
         run: |
           if [ -d "tests/" ] && [ -n "$(ls -A tests/)" ]; then
-            pytest tests/ -v --tb=short --junitxml=test-results.xml
+            # <--- 加入 PYTHONPATH=. 確保 pytest 能夠正確載入專案根目錄的 main.py
+            PYTHONPATH=. pytest tests/ -v --tb=short --junitxml=test-results.xml
           else
             echo "⚠️  tests/ 目錄不存在或為空，略過單元測試"
             echo "   建議補充測試：tests/test_utils.py（見 README 說明）"
