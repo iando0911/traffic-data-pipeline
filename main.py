@@ -1,6 +1,6 @@
 """
-台灣交通事故大數據分析管線 v2.2
-修正項目：
+台灣交通事故大數據分析管線 v2.3
+修正項目（累積自 v2.2）：
   1. 加入缺失率統計（座標、年齡／性別）
   2. Cohen's d 存入 stats_summary
   3. 所有工程效能指標統一輸出至 JSON 與儀表板
@@ -9,6 +9,11 @@
   6. [v2.2] 月份資料完整性檢查（件數異常低時標記警示）
   7. [v2.2] 原始資料本地快取（API 下線時自動 fallback）
   8. [v2.2] requirements.txt 固定版本建議（見腳本末尾說明）
+  ── v2.3 新增 ──────────────────────────────────────────────
+  9. [v2.3] metadata 加入 git commit SHA（資料可追溯性）
+ 10. [v2.3] 假日 vs 平日事故率分析（發生日期欄位判斷星期幾）
+ 11. [v2.3] 尖峰時段分析（通勤時段 vs 離峰時段）
+ 12. [v2.3] 年齡段事故率暴露率校正（除以各年齡段估計母體人口）
 """
 
 import pandas as pd
@@ -19,6 +24,7 @@ import plotly.graph_objects as go
 import folium
 from folium.plugins import HeatMap
 import os
+import subprocess
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -63,6 +69,33 @@ CONFIG["raw_cache_dir"].mkdir(exist_ok=True)
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 RUN_TIMESTAMP = datetime.now().strftime("%Y-%m-%d %H:%M UTC+8")
 
+# ═══════════════════════════════════════════════════════
+# [v2.3] 資料可追溯性：取得目前的 git commit SHA
+# ═══════════════════════════════════════════════════════
+def get_git_sha() -> str:
+    """
+    取得目前 HEAD 的短 SHA（7 碼）。
+    在非 git 環境（例如直接解壓縮執行）或 CI detached HEAD 無法取得時，
+    優先從環境變數 GITHUB_SHA 讀取，仍失敗則回傳 'unknown'。
+    """
+    # GitHub Actions 會自動設定 GITHUB_SHA（完整 40 碼）
+    env_sha = os.environ.get("GITHUB_SHA", "")
+    if env_sha:
+        return env_sha[:7]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+GIT_SHA = get_git_sha()
+print(f"ℹ️  Git SHA: {GIT_SHA}  |  Run: {RUN_TIMESTAMP}")
+
+
 # ── [v2.2] 建立帶重試機制的 requests Session ──────────────
 def make_session() -> requests.Session:
     """
@@ -101,9 +134,12 @@ def safe_read_csv(source, label="檔案") -> pd.DataFrame | None:
     print(f"      ⚠️  {label}：所有編碼均失敗，略過")
     return None
 
+
 def roc_to_ad(year_series: pd.Series) -> pd.Series:
+    """民國年轉西元年。年份 >= 200 視為已是西元年，直接回傳。"""
     year = pd.to_numeric(year_series, errors="coerce")
     return year.where(year >= 200, year + 1911)
+
 
 def format_pvalue(p: float) -> str:
     if p < 0.001:
@@ -115,8 +151,9 @@ def format_pvalue(p: float) -> str:
     else:
         return f"p = {p:.4f}（不顯著）"
 
+
 # ── [v2.2] 月份資料完整性檢查 ────────────────────────────
-def check_monthly_completeness(monthly_df: pd.DataFrame, threshold: float = 0.2) -> list[str]:
+def check_monthly_completeness(monthly_df: pd.DataFrame, threshold: float = 0.2) -> list[int]:
     """
     檢查月份資料是否完整。
     以「前三個完整月份的平均件數」為基準，
@@ -138,6 +175,55 @@ def check_monthly_completeness(monthly_df: pd.DataFrame, threshold: float = 0.2)
     ]["月份"].tolist()
 
     return [int(m) for m in incomplete]
+
+
+# ── [v2.3] 假日判斷輔助函式 ──────────────────────────────
+def classify_weekday(date_series: pd.Series) -> pd.Series:
+    """
+    將日期序列分類為「平日」（週一至週五）或「假日」（週六、週日）。
+    輸入：pd.Series，元素為可轉換為 datetime 的字串或 Timestamp。
+    輸出：pd.Series[str]，值為 '平日' 或 '假日'。
+    """
+    dt = pd.to_datetime(date_series, errors="coerce")
+    # weekday()：0=Monday … 4=Friday, 5=Saturday, 6=Sunday
+    return dt.dt.weekday.map(lambda w: "假日" if w >= 5 else "平日")
+
+
+# ── [v2.3] 尖峰時段分類 ──────────────────────────────────
+# 參考交通部定義：早尖峰 7-9 時、晚尖峰 17-19 時
+PEAK_RANGES = [(7, 9), (17, 19)]
+
+def classify_peak(hour_series: pd.Series) -> pd.Series:
+    """
+    將小時（0-23）分類為「尖峰」或「離峰」。
+    尖峰定義：早上 07:00-09:59 或 傍晚 17:00-19:59。
+    """
+    def _label(h):
+        if pd.isna(h):
+            return None
+        h = int(h)
+        for start, end in PEAK_RANGES:
+            if start <= h <= end:
+                return "尖峰"
+        return "離峰"
+    return hour_series.map(_label)
+
+
+# ── [v2.3] 台灣各年齡段人口估計（民國 115 年，單位：人）──────
+# 資料來源：國發會人口推估（2026 年中推估），依本管線年齡組對應加總。
+# https://pop-proj.ndc.gov.tw/
+# 此為靜態嵌入值，若要動態抓取請改呼叫國發會 API。
+POPULATION_BY_AGE_GROUP: dict[str, int] = {
+    "<18":   3_800_000,   # 0-17 歲
+    "18-24": 1_950_000,   # 18-24 歲
+    "25-34": 3_200_000,   # 25-34 歲
+    "35-44": 3_500_000,   # 35-44 歲
+    "45-54": 3_600_000,   # 45-54 歲
+    "55-64": 3_300_000,   # 55-64 歲
+    "65+":   4_300_000,   # 65 歲以上
+}
+
+POPULATION_SOURCE = "國發會人口推估 2026（中推估），靜態嵌入，民國 115 年"
 
 
 # ═══════════════════════════════════════════════════════
@@ -249,6 +335,49 @@ df_clean["lon"] = pd.to_numeric(
     df_clean.get("經度", pd.Series(dtype=float)), errors="coerce"
 )
 
+# ── [v2.3] 時間欄位解析（假日 / 尖峰分析所需）────────────
+# 嘗試解析「發生日期」欄位（格式因年度而異，容錯處理）
+date_col = next((c for c in ["發生日期", "事故發生日期"] if c in df_clean.columns), None)
+time_col = next((c for c in ["發生時間", "事故發生時間"] if c in df_clean.columns), None)
+
+if date_col:
+    # 日期格式：可能為 "1140101"（民國年月日 7 碼）或 "114/01/01"
+    raw_date = df_clean[date_col].astype(str).str.strip()
+    # 嘗試處理 7 碼數字型民國日期（如 1140115）
+    mask_7digit = raw_date.str.match(r"^\d{7}$")
+    if mask_7digit.any():
+        # 民國年前三碼 + 月兩碼 + 日兩碼
+        roc_y = raw_date.str[:3].astype(int) + 1911
+        month  = raw_date.str[3:5]
+        day    = raw_date.str[5:7]
+        df_clean.loc[mask_7digit, "發生日期_parsed"] = pd.to_datetime(
+            roc_y.astype(str) + "-" + month + "-" + day,
+            errors="coerce",
+        )
+    # 非 7 碼嘗試 pandas 直接解析（西元格式）
+    df_clean["發生日期_parsed"] = df_clean.get(
+        "發生日期_parsed",
+        pd.to_datetime(raw_date, errors="coerce"),
+    )
+    df_clean["星期類別"] = classify_weekday(df_clean["發生日期_parsed"])
+else:
+    df_clean["星期類別"] = None
+    print("   ⚠️  未找到發生日期欄位，略過假日分析")
+
+if time_col:
+    # 時間欄位通常為 0-23 的整數，或 "HH:MM" 字串
+    raw_time = df_clean[time_col]
+    if pd.api.types.is_numeric_dtype(raw_time):
+        df_clean["發生時段_小時"] = pd.to_numeric(raw_time, errors="coerce")
+    else:
+        df_clean["發生時段_小時"] = pd.to_datetime(
+            raw_time.astype(str), format="%H:%M", errors="coerce"
+        ).dt.hour
+    df_clean["時段類別"] = classify_peak(df_clean["發生時段_小時"])
+else:
+    df_clean["時段類別"] = None
+    print("   ⚠️  未找到發生時間欄位，略過尖峰分析")
+
 # ── 缺失率計算 ──────────────────────────────────────────
 coord_invalid_mask = (
     df_clean["lat"].isna()
@@ -355,6 +484,9 @@ SNAPSHOT_NOTE = f"（本圖為管線快照，資料截止：{RUN_TIMESTAMP}；�
 cause_df = pd.DataFrame()
 monthly_df = pd.DataFrame()
 incomplete_months: list[int] = []
+weekday_df = pd.DataFrame()
+peak_df = pd.DataFrame()
+age_rate_df = pd.DataFrame()
 
 if len(df_clean) > 0:
 
@@ -437,6 +569,172 @@ if len(df_clean) > 0:
     fig_trend.write_html(str(CONFIG["output_dir"] / "monthly_trend.html"))
     print("   ✅ monthly_trend.html")
 
+    # ────────────────────────────────────────────────────
+    # [v2.3] Step 4A：假日 vs 平日事故分析
+    # ────────────────────────────────────────────────────
+    if df_clean["星期類別"].notna().any():
+        weekday_df = (
+            df_clean[df_clean["星期類別"].notna()]
+            .groupby(["星期類別", "性別"])
+            .size()
+            .reset_index(name="件數")
+        )
+        # 正規化為每日平均件數（平日 5 天，假日 2 天）
+        day_count = {"平日": 5, "假日": 2}
+        weekday_df["每日平均件數"] = weekday_df.apply(
+            lambda r: r["件數"] / day_count.get(r["星期類別"], 1), axis=1
+        )
+
+        fig_weekday = px.bar(
+            weekday_df, x="星期類別", y="每日平均件數", color="性別",
+            color_discrete_map=COLOR_MAP, barmode="group",
+            title=f"📅 假日 vs 平日 每日平均肇事件數 {SNAPSHOT_NOTE}",
+            template=PLOTLY_THEME,
+            labels={"每日平均件數": "每日平均件數（件）", "星期類別": "日期類別"},
+        )
+        fig_weekday.update_layout(
+            annotations=[dict(
+                text="平日=週一至週五，假日=週六至週日；以週內天數正規化後比較",
+                xref="paper", yref="paper", x=0.5, y=-0.15,
+                showarrow=False, font=dict(size=11, color="gray"),
+            )]
+        )
+        fig_weekday.write_html(str(CONFIG["output_dir"] / "weekday_analysis.html"))
+        print("   ✅ weekday_analysis.html")
+    else:
+        print("   ⚠️  日期欄位缺失，略過假日分析圖表")
+
+    # ────────────────────────────────────────────────────
+    # [v2.3] Step 4B：尖峰 vs 離峰時段分析
+    # ────────────────────────────────────────────────────
+    if df_clean["時段類別"].notna().any():
+        peak_df = (
+            df_clean[df_clean["時段類別"].notna()]
+            .groupby(["時段類別", "性別"])
+            .size()
+            .reset_index(name="件數")
+        )
+        total_by_peak = peak_df.groupby("時段類別")["件數"].transform("sum")
+        peak_df["佔比"] = (peak_df["件數"] / total_by_peak * 100).round(1)
+
+        fig_peak = px.bar(
+            peak_df, x="時段類別", y="件數", color="性別",
+            color_discrete_map=COLOR_MAP, barmode="group",
+            title=f"⏰ 尖峰 vs 離峰時段肇事件數 {SNAPSHOT_NOTE}",
+            template=PLOTLY_THEME,
+            labels={"時段類別": "時段類別", "件數": "件數"},
+            text="佔比",
+        )
+        fig_peak.update_traces(texttemplate="%{text}%", textposition="outside")
+        fig_peak.update_layout(
+            annotations=[dict(
+                text="尖峰時段定義：早上 07:00–09:59 及傍晚 17:00–19:59（交通部標準）",
+                xref="paper", yref="paper", x=0.5, y=-0.15,
+                showarrow=False, font=dict(size=11, color="gray"),
+            )]
+        )
+        fig_peak.write_html(str(CONFIG["output_dir"] / "peak_analysis.html"))
+        print("   ✅ peak_analysis.html")
+
+        # 小時分佈直方圖（更細緻的時間分析）
+        hour_df = (
+            df_clean[df_clean["發生時段_小時"].notna()]
+            .groupby(["發生時段_小時", "性別"])
+            .size()
+            .reset_index(name="件數")
+        )
+        fig_hour = px.line(
+            hour_df, x="發生時段_小時", y="件數", color="性別",
+            color_discrete_map=COLOR_MAP, markers=True,
+            title=f"🕐 24 小時肇事分布 {SNAPSHOT_NOTE}",
+            template=PLOTLY_THEME,
+            labels={"發生時段_小時": "發生時刻（時）", "件數": "件數"},
+        )
+        # 標示尖峰區域
+        for start, end in PEAK_RANGES:
+            fig_hour.add_vrect(
+                x0=start, x1=end,
+                fillcolor="orange", opacity=0.12,
+                line_width=0,
+                annotation_text="尖峰", annotation_position="top left",
+            )
+        fig_hour.write_html(str(CONFIG["output_dir"] / "hourly_distribution.html"))
+        print("   ✅ hourly_distribution.html")
+    else:
+        print("   ⚠️  時間欄位缺失，略過尖峰分析圖表")
+
+    # ────────────────────────────────────────────────────
+    # [v2.3] Step 4C：年齡段事故率暴露率校正
+    # 將各年齡組絕對件數除以估計母體人口，得到每萬人事故率
+    # 讓「65+ 件數多」≠「65+ 風險高」的統計謬誤得到校正
+    # ────────────────────────────────────────────────────
+    age_raw = (
+        df_clean.groupby("年齡組").size()
+        .reset_index(name="絕對件數")
+    )
+    age_raw["年齡組"] = age_raw["年齡組"].astype(str)
+    age_raw["母體人口（估）"] = age_raw["年齡組"].map(POPULATION_BY_AGE_GROUP)
+
+    age_rate_df = age_raw.dropna(subset=["母體人口（估）"]).copy()
+    age_rate_df["每萬人事故率"] = (
+        age_rate_df["絕對件數"] / age_rate_df["母體人口（估）"] * 10_000
+    ).round(2)
+    age_rate_df["人口來源"] = POPULATION_SOURCE
+
+    # 依每萬人事故率排序
+    age_rate_df = age_rate_df.sort_values("每萬人事故率", ascending=False)
+
+    fig_age_rate = px.bar(
+        age_rate_df,
+        x="年齡組", y="每萬人事故率",
+        color="每萬人事故率",
+        color_continuous_scale="RdYlGn_r",
+        title=f"🎯 各年齡段每萬人事故率（暴露率校正後）{SNAPSHOT_NOTE}",
+        template=PLOTLY_THEME,
+        labels={"每萬人事故率": "每萬人事故率", "年齡組": "年齡組"},
+        text="每萬人事故率",
+        # 依原始年齡組順序排列 x 軸，方便對比
+        category_orders={"年齡組": labels},
+    )
+    fig_age_rate.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+    fig_age_rate.update_layout(
+        coloraxis_showscale=False,
+        annotations=[dict(
+            text=f"⚠️  人口基數來源：{POPULATION_SOURCE}，僅供參考，建議以官方最新數據核驗",
+            xref="paper", yref="paper", x=0.5, y=-0.18,
+            showarrow=False, font=dict(size=10, color="gray"),
+        )],
+    )
+    fig_age_rate.write_html(str(CONFIG["output_dir"] / "age_rate_adjusted.html"))
+    print("   ✅ age_rate_adjusted.html")
+
+    # 同時輸出對照表（絕對件數 vs 校正率）
+    age_rate_df_sorted = age_rate_df.sort_values("年齡組")
+    fig_age_compare = go.Figure(data=[go.Table(
+        header=dict(
+            values=["<b>年齡組</b>", "<b>絕對件數</b>", "<b>母體人口（估）</b>", "<b>每萬人事故率</b>"],
+            fill_color="#3A86FF", font=dict(color="white", size=12),
+            align="center",
+        ),
+        cells=dict(
+            values=[
+                age_rate_df_sorted["年齡組"].tolist(),
+                [f"{v:,}" for v in age_rate_df_sorted["絕對件數"]],
+                [f"{v:,}" for v in age_rate_df_sorted["母體人口（估）"]],
+                age_rate_df_sorted["每萬人事故率"].tolist(),
+            ],
+            fill_color=[["#f4f7ff" if i % 2 == 0 else "white"
+                         for i in range(len(age_rate_df_sorted))]],
+            align="center", font=dict(size=12),
+        ),
+    )])
+    fig_age_compare.update_layout(
+        title=f"📋 年齡段事故率對照表（絕對件數 vs 暴露率校正）{SNAPSHOT_NOTE}",
+        height=350,
+    )
+    fig_age_compare.write_html(str(CONFIG["output_dir"] / "age_rate_table.html"))
+    print("   ✅ age_rate_table.html")
+
 # ── 統計摘要表 ────────────────────────────────────────────
 if stats_summary:
     engineering_keys = ["資料截止日期", "原始年度筆數", "第一當事者純化筆數",
@@ -472,13 +770,25 @@ if stats_summary:
     dashboard_data = {
         "metadata": {
             "update_time": RUN_TIMESTAMP,
+            "git_sha": GIT_SHA,            # [v2.3] 資料可追溯性
             "target_years": CONFIG["target_roc_years"],
             # [v2.2] 將不完整月份資訊帶給前端，讓儀表板顯示警示
             "incomplete_months": incomplete_months,
+            # [v2.3] 告知前端哪些新分析已有資料
+            "has_weekday_analysis": not weekday_df.empty,
+            "has_peak_analysis":    not peak_df.empty,
+            "has_age_rate_adjusted": not age_rate_df.empty,
+            "population_source":    POPULATION_SOURCE,
         },
         "stats_summary": stats_summary,
-        "cause_data": cause_df.to_dict(orient="records"),
+        "cause_data":    cause_df.to_dict(orient="records"),
         "monthly_trend": monthly_df.to_dict(orient="records"),
+        # [v2.3] 新增分析資料（前端可選擇性渲染）
+        "weekday_analysis": weekday_df.to_dict(orient="records"),
+        "peak_analysis":    peak_df.to_dict(orient="records"),
+        "age_rate_adjusted": age_rate_df[[
+            "年齡組", "絕對件數", "母體人口（估）", "每萬人事故率"
+        ]].to_dict(orient="records") if not age_rate_df.empty else [],
     }
 
     with open(CONFIG["output_dir"] / "dashboard_data.json", "w", encoding="utf-8") as f:
@@ -504,6 +814,7 @@ if len(df_clean) > 0:
             f'<div style="font-size:11px;color:#666;background:white;'
             f'padding:4px 8px;border-radius:4px;border:1px solid #ccc;">'
             f'快照日期：{RUN_TIMESTAMP}<br>'
+            f'git SHA：{GIT_SHA}<br>'
             f'僅呈現事故絕對件數分佈，非暴露率校正後之風險圖</div>'
         )),
     ).add_to(m)
@@ -512,8 +823,9 @@ m.save(str(CONFIG["output_dir"] / "heatmap.html"))
 print("   ✅ heatmap.html")
 
 print("\n" + "=" * 60)
-print("🚀 管線 v2.2 執行完畢！")
+print("🚀 管線 v2.3 執行完畢！")
 print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
+print(f"   Git SHA：{GIT_SHA}")
 if incomplete_months:
     print(f"   ⚠️  請注意：{incomplete_months} 月份資料可能不完整")
 print("=" * 60)
