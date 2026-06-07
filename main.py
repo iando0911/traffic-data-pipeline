@@ -132,15 +132,73 @@ def fetch_latest_accident_urls() -> list[str]:
     # 策略一與策略二的備用端點
     api_endpoints = [
         "https://data.gov.tw/api/v2/rest/dataset/", # 首選 API
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/" # 警政署直連端點 (跳過 data.gov.tw DNS)
+        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/" # 警政署直連端點
     ]
     
     dataset_ids = {
         "A1": "12818", 
         "A2": "13139",
-        "A1_alt": "986931B3-0E46-4F94-BF52-A2911499301F", # 警政署內部的資料集 UUID
+        "A1_alt": "986931B3-0E46-4F94-BF52-A2911499301F", 
         "A2_alt": "02D40248-7CAA-4354-82EA-E27AB8DCAB39"
     }
+
+    def _collect_urls(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key.lower() in ['downloadurl', 'url'] and isinstance(value, str) and value.startswith("http"):
+                    dynamic_urls.append(value)
+                else:
+                    _collect_urls(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                _collect_urls(item)
+
+    # 嘗試策略一：連線 data.gov.tw API
+    print("      -> 嘗試路由 1：政府資料開放平臺 API")
+    try:
+        for ds_id in [dataset_ids["A1"], dataset_ids["A2"]]:
+            resp = session.get(f"{api_endpoints[0]}{ds_id}", headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            _collect_urls(resp.json())
+    except Exception as e:
+        print(f"      ⚠️ 路由 1 失效 ({e})")
+        
+    # 如果策略一抓不到任何東西，啟動策略二：直連警政署主機
+    if not dynamic_urls:
+        print("      -> 嘗試路由 2：警政署後台直連")
+        try:
+            for ds_uuid in [dataset_ids["A1_alt"], dataset_ids["A2_alt"]]:
+                resp = session.get(f"{api_endpoints[1]}{ds_uuid}", headers=HEADERS, timeout=10)
+                resp.raise_for_status()
+                url_pattern = re.compile(r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download")
+                links = url_pattern.findall(resp.text)
+                dynamic_urls.extend(links)
+        except Exception as e:
+            print(f"      ⚠️ 路由 2 失效 ({e})")
+
+    # 去重保序
+    unique_urls = []
+    seen = set()
+    for u in dynamic_urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    # 策略三：終極 Fallback（包含 5 月最新 A2 檔案）
+    if not unique_urls:
+        print("      ⚠️ 所有動態爬蟲路由皆失效 (可能遭政府 WAF 阻擋 GitHub IP)，啟用策略 3：載入靜態歷史連結庫")
+        unique_urls = [
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/79165BC4-09EA-41D7-A1B0-C4355D9B4A31/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/00E3617E-C3B2-4B0E-AC93-5A6F1B531B04/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E76E38F3-D046-4E87-B759-97B746AA5B1B/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/8B93B29A-644E-49C1-8056-19681D361E43/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/6A63F59F-2D81-45E0-A59E-253DB0609DFF/download"
+        ]
+
+    # 就是這行！一定要有它才能把抓到的網址交給主程式！
+    return unique_urls
 
     def _collect_urls(obj):
         if isinstance(obj, dict):
