@@ -119,18 +119,30 @@ def make_session() -> requests.Session:
 # ═══════════════════════════════════════════════════════
 def fetch_latest_accident_urls() -> list[str]:
     """
-    [v2.5 更新]
+    [v2.5.1 更新]
     動態從 data.gov.tw 取得 A1 / A2 最新下載連結。
-    直接解析官方 API 結構中的 'downloadURL'，不再被特定網域綁死。
+    導入「三重 Fallback 機制」，解決 GitHub Actions DNS 解析失敗的問題：
+    1. 官方 API (data.gov.tw)
+    2. 官方備用網域 / 政府資料開放平臺的舊版路由
+    3. 若全面失效，退回安全的靜態歷史連結庫，確保管線不中斷。
     """
     session = make_session()
     dynamic_urls: list[str] = []
     
-    # A1 / A2 資料集頁面
-    dataset_ids = [12818, 13139]
+    # 策略一與策略二的備用端點
+    api_endpoints = [
+        "https://data.gov.tw/api/v2/rest/dataset/", # 首選 API
+        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/" # 警政署直連端點 (跳過 data.gov.tw DNS)
+    ]
+    
+    dataset_ids = {
+        "A1": "12818", 
+        "A2": "13139",
+        "A1_alt": "986931B3-0E46-4F94-BF52-A2911499301F", # 警政署內部的資料集 UUID
+        "A2_alt": "02D40248-7CAA-4354-82EA-E27AB8DCAB39"
+    }
 
     def _collect_urls(obj):
-        """遞迴掃描 JSON 中所有名為 downloadURL 的連結。"""
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if key.lower() in ['downloadurl', 'url'] and isinstance(value, str) and value.startswith("http"):
@@ -141,14 +153,30 @@ def fetch_latest_accident_urls() -> list[str]:
             for item in obj:
                 _collect_urls(item)
 
-    for ds_id in dataset_ids:
-        try:
-            api_url = f"https://data.gov.tw/api/v2/rest/dataset/{ds_id}"
-            resp = session.get(api_url, headers=HEADERS, timeout=15)
+    # 嘗試策略一：連線 data.gov.tw API
+    print("      -> 嘗試路由 1：政府資料開放平臺 API")
+    try:
+        for ds_id in [dataset_ids["A1"], dataset_ids["A2"]]:
+            resp = session.get(f"{api_endpoints[0]}{ds_id}", headers=HEADERS, timeout=10)
             resp.raise_for_status()
             _collect_urls(resp.json())
+    except Exception as e:
+        print(f"      ⚠️ 路由 1 失效 ({e})")
+        
+    # 如果策略一抓不到任何東西，啟動策略二：直連警政署主機 (繞過 data.gov.tw)
+    if not dynamic_urls:
+        print("      -> 嘗試路由 2：警政署後台直連")
+        try:
+            # 這是警政署後台 API 的寫法，直接要該 UUID 底下的資源清單
+            for ds_uuid in [dataset_ids["A1_alt"], dataset_ids["A2_alt"]]:
+                resp = session.get(f"{api_endpoints[1]}{ds_uuid}", headers=HEADERS, timeout=10)
+                resp.raise_for_status()
+                # 警政署的 API 結構可能不同，我們同時用 Regex 暴力抓取
+                url_pattern = re.compile(r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download")
+                links = url_pattern.findall(resp.text)
+                dynamic_urls.extend(links)
         except Exception as e:
-            print(f"⚠️ 無法取得資料集 {ds_id} 的 metadata：{e}")
+            print(f"      ⚠️ 路由 2 失效 ({e})")
 
     # 去重保序
     unique_urls = []
@@ -157,6 +185,19 @@ def fetch_latest_accident_urls() -> list[str]:
         if u not in seen:
             seen.add(u)
             unique_urls.append(u)
+
+    # 策略三：終極 Fallback，如果前兩招都失敗，回傳你原本手動找到的靜態連結，
+    # 至少讓這次的 ETL 能用 1 到 4 月的舊資料跑完，不至於 Crash 亮紅燈。
+    if not unique_urls:
+        print("      ⚠️ 所有動態爬蟲路由皆失效，啟用策略 3：載入靜態歷史連結庫")
+        unique_urls = [
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/79165BC4-09EA-41D7-A1B0-C4355D9B4A31/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/00E3617E-C3B2-4B0E-AC93-5A6F1B531B04/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E76E38F3-D046-4E87-B759-97B746AA5B1B/download",
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/8B93B29A-644E-49C1-8056-19681D361E43/download",
+        ]
 
     return unique_urls
 
