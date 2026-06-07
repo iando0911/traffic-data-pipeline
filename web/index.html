@@ -4,8 +4,50 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>台灣交通事故動態戰情室</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.common.min.js"></script>
+    <link rel="stylesheet" href="./style.css">
+    <style>
+        .loading-overlay {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 2rem;
+            color: #6c757d;
+            font-size: 1rem;
+        }
+        .spinner {
+            width: 20px; height: 20px;
+            border: 3px solid #e9ecef;
+            border-top-color: #3A86FF;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-banner {
+            display: none;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1rem;
+            color: #856404;
+        }
+        .error-banner.visible { display: block; }
+
+        .data-warning {
+            display: inline-block;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 2px 10px;
+            font-size: .82rem;
+            color: #856404;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+    </style>
 </head>
 <body>
     <header>
@@ -15,42 +57,241 @@
     </header>
 
     <main>
+        <div class="error-banner" id="error-banner" role="alert"></div>
+
         <div class="card">
             <h2>📊 進階分析圖表 (Python 深度渲染)</h2>
             <div class="btn-grid">
-                <a class="nav-btn" href="age_distribution.html" target="_blank">🎻 年齡風險分布</a>
-                <a class="nav-btn" href="heatmap_age_month.html" target="_blank">🗓 年齡與月份熱圖</a>
-                <a class="nav-btn" href="pipeline_stats.html" target="_blank">🔧 管線效能報告</a>
-                <a class="nav-btn" href="stats_table.html" target="_blank">📋 T-Test 統計摘要</a>
-                <a class="nav-btn primary" href="heatmap.html" target="_blank">🗺️ 台灣肇事熱力圖</a>
+                <a class="nav-btn" href="./age_distribution.html"
+                   target="_blank"
+                   aria-label="肇事主因者年齡風險分布（於新視窗開啟）">
+                   🎻 年齡風險分布
+                </a>
+                <a class="nav-btn" href="./heatmap_age_month.html"
+                   target="_blank"
+                   aria-label="年齡組與月份事故件數熱圖（於新視窗開啟）">
+                   🗓 年齡與月份熱圖
+                </a>
+                <a class="nav-btn" href="./pipeline_stats.html"
+                   target="_blank"
+                   aria-label="ETL 管線效能報告（於新視窗開啟）">
+                   🔧 管線效能報告
+                </a>
+                <a class="nav-btn" href="./stats_table.html"
+                   target="_blank"
+                   aria-label="Welch T-Test 統計摘要表（於新視窗開啟）">
+                   📋 T-Test 統計摘要
+                </a>
+                <a class="nav-btn primary" href="./heatmap.html"
+                   target="_blank"
+                   aria-label="台灣全島肇事空間熱力圖（於新視窗開啟）">
+                   🗺️ 台灣肇事熱力圖
+                </a>
             </div>
         </div>
+
         <div class="card summary-grid">
             <div class="stat-box">
                 <h3>分析樣本總數</h3>
-                <p id="total-samples" class="big-number">--</p>
+                <p id="total-samples" class="big-number" aria-live="polite">--</p>
             </div>
             <div class="stat-box">
                 <h3>男性平均年齡</h3>
-                <p id="male-age" class="big-number">--</p>
+                <p id="male-age" class="big-number" aria-live="polite">--</p>
             </div>
             <div class="stat-box">
                 <h3>女性平均年齡</h3>
-                <p id="female-age" class="big-number">--</p>
+                <p id="female-age" class="big-number" aria-live="polite">--</p>
             </div>
         </div>
 
         <div class="card chart-container">
             <h2>🔍 主要肇事原因 TOP 15</h2>
-            <div id="cause-chart" style="width: 100%; height: 500px;"></div>
+            <div id="cause-chart-loading" class="loading-overlay" aria-label="圖表載入中">
+                <div class="spinner" aria-hidden="true"></div><span>圖表載入中...</span>
+            </div>
+            <!-- ★ 修正：不用 display:none，改用 visibility + height:0 避免 ECharts 寬度為 0 -->
+            <div id="cause-chart"
+                 style="width:100%; height:500px;"
+                 role="img"
+                 aria-label="主要肇事原因 TOP 15，依性別分色水平長條圖">
+            </div>
         </div>
-        
+
         <div class="card chart-container">
-            <h2>📈 各月份肇事趨勢</h2>
-            <div id="trend-chart" style="width: 100%; height: 400px;"></div>
+            <h2>
+                📈 各月份肇事趨勢
+                <span id="monthly-warning" class="data-warning"
+                      style="display:none;"
+                      role="status"
+                      aria-live="polite">
+                </span>
+            </h2>
+            <div id="trend-chart-loading" class="loading-overlay" aria-label="圖表載入中">
+                <div class="spinner" aria-hidden="true"></div><span>圖表載入中...</span>
+            </div>
+            <div id="trend-chart"
+                 style="width:100%; height:400px;"
+                 role="img"
+                 aria-label="各月份男女肇事件數趨勢折線圖">
+            </div>
         </div>
     </main>
 
-    <script src="app.js"></script>
+    <script>
+    // ── 工具函數 ────────────────────────────────────────
+    function showErrorBanner(msg) {
+        const banner = document.getElementById('error-banner');
+        banner.textContent = '⚠️ ' + msg;
+        banner.classList.add('visible');
+    }
+
+    /**
+     * 隱藏 loading spinner，並對 ECharts 實例呼叫 resize()。
+     * ★ 關鍵修正：ECharts 在 display:none 狀態下初始化時寬度為 0，
+     *   必須在元素可見後呼叫 resize() 才能正確渲染。
+     */
+    function showChart(chartInstance, loadingId) {
+        document.getElementById(loadingId).style.display = 'none';
+        chartInstance.resize();
+    }
+
+    // ── ECharts 初始化（元素已可見，尺寸正確）──────────
+    const causeChart = echarts.init(document.getElementById('cause-chart'));
+    const trendChart = echarts.init(document.getElementById('trend-chart'));
+
+    // ── 主函式 ──────────────────────────────────────────
+    async function initDashboard() {
+        let dashboardData;
+        try {
+            const response = await fetch('./dashboard_data.json');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            dashboardData = await response.json();
+        } catch (error) {
+            showErrorBanner(`資料載入失敗（${error.message}），請稍後重整頁面。`);
+            document.getElementById('update-time').textContent = '資料載入失敗';
+            ['cause-chart-loading', 'trend-chart-loading'].forEach(id => {
+                document.getElementById(id).innerHTML = '❌ 無法載入資料';
+            });
+            return;
+        }
+
+        updateText(dashboardData);
+        drawCauseChart(dashboardData);
+        drawTrendChart(dashboardData);
+        checkDataWarnings(dashboardData);
+    }
+
+    // ── 更新文字數據 ────────────────────────────────────
+    function updateText(data) {
+        document.getElementById('update-time').textContent =
+            `最後更新時間：${data.metadata.update_time}`;
+        document.getElementById('total-samples').textContent =
+            data.stats_summary['最終可用樣本數'];
+        document.getElementById('male-age').textContent =
+            data.stats_summary['男性平均年齡'];
+        document.getElementById('female-age').textContent =
+            data.stats_summary['女性平均年齡'];
+    }
+
+    // ── 月份不完整警示 ───────────────────────────────────
+    function checkDataWarnings(data) {
+        const incomplete = data.metadata.incomplete_months || [];
+        if (incomplete.length > 0) {
+            const tag = document.getElementById('monthly-warning');
+            tag.textContent = `⚠️ ${incomplete.join('、')} 月資料不完整`;
+            tag.style.display = 'inline-block';
+        }
+    }
+
+    // ── 肇因長條圖 ──────────────────────────────────────
+    function drawCauseChart(data) {
+        const rawData = data.cause_data;
+        const causes = [...new Set(rawData.map(item => item['肇因']))].reverse();
+
+        const maleData = causes.map(c => {
+            const item = rawData.find(d => d['肇因'] === c && d['性別'] === '男');
+            return item ? item['件數'] : 0;
+        });
+        const femaleData = causes.map(c => {
+            const item = rawData.find(d => d['肇因'] === c && d['性別'] === '女');
+            return item ? item['件數'] : 0;
+        });
+
+        causeChart.setOption({
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+            legend: { data: ['男', '女'] },
+            // ★ 修正：containLabel:true 搭配足夠的 left，避免中文標籤被截斷
+            grid: { left: '3%', right: '6%', bottom: '3%', top: '40px', containLabel: true },
+            xAxis: { type: 'value', name: '件數' },
+            yAxis: {
+                type: 'category',
+                data: causes,
+                axisLabel: { fontSize: 12, interval: 0 },
+            },
+            series: [
+                { name: '男', type: 'bar', data: maleData, itemStyle: { color: '#3A86FF' } },
+                { name: '女', type: 'bar', data: femaleData, itemStyle: { color: '#FF6B9D' } },
+            ],
+        });
+
+        showChart(causeChart, 'cause-chart-loading');
+    }
+
+    // ── 月份趨勢圖 ──────────────────────────────────────
+    function drawTrendChart(data) {
+        const rawData = data.monthly_trend;
+        const incomplete = data.metadata.incomplete_months || [];
+        const months = [1,2,3,4,5,6,7,8,9,10,11,12];
+
+        const maleData = months.map(m => {
+            const item = rawData.find(d => d['月份'] === m && d['性別'] === '男');
+            return item ? item['件數'] : null;
+        });
+        const femaleData = months.map(m => {
+            const item = rawData.find(d => d['月份'] === m && d['性別'] === '女');
+            return item ? item['件數'] : null;
+        });
+
+        // 不完整月份標記為警示大頭針
+        const markPoints = incomplete.map(m => ({
+            coord: [`${m}月`, maleData[m - 1]],
+            symbol: 'pin',
+            symbolSize: 30,
+            itemStyle: { color: '#ffc107' },
+            label: { show: false },
+        }));
+
+        trendChart.setOption({
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['男', '女'] },
+            xAxis: { type: 'category', data: months.map(m => `${m}月`) },
+            yAxis: { type: 'value', name: '件數' },
+            series: [
+                {
+                    name: '男', type: 'line', data: maleData,
+                    smooth: true, connectNulls: false,
+                    itemStyle: { color: '#3A86FF' },
+                    markPoint: { data: markPoints },
+                },
+                {
+                    name: '女', type: 'line', data: femaleData,
+                    smooth: true, connectNulls: false,
+                    itemStyle: { color: '#FF6B9D' },
+                },
+            ],
+        });
+
+        showChart(trendChart, 'trend-chart-loading');
+    }
+
+    // ── 啟動 ─────────────────────────────────────────────
+    initDashboard();
+
+    window.addEventListener('resize', () => {
+        causeChart.resize();
+        trendChart.resize();
+    });
+    </script>
 </body>
 </html>
