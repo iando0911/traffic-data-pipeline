@@ -44,6 +44,7 @@ from pathlib import Path
 from datetime import datetime
 import re
 import cloudscraper
+import boto3
 
 warnings.filterwarnings("ignore")
 
@@ -934,8 +935,32 @@ def run_pipeline():
         print(f"   ⚠️  請注意：{incomplete_months} 月份資料可能不完整")
     print("=" * 60)
 
+def sync_to_s3(local_dir="output", bucket_name="traffic-dashboard-743181156800"):
+    """
+    將本地產出的 output 目錄同步到 S3 Bucket
+    需要預先在電腦設定好環境變數: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    """
+    s3 = boto3.client('s3')
+    print(f"\n🚀 開始同步至 S3 Bucket: {bucket_name}...")
+    
+    for root, dirs, files in os.walk(local_dir):
+        for file in files:
+            local_path = os.path.join(root, file)
+            # 在 S3 上的路徑
+            relative_path = os.path.relpath(local_path, local_dir)
+            
+            # 判斷快取策略 (HTML 設為 no-cache)
+            extra_args = {}
+            if file.endswith('.html'):
+                extra_args = {'ContentType': 'text/html', 'CacheControl': 'no-cache'}
+            
+            s3.upload_file(local_path, bucket_name, relative_path, ExtraArgs=extra_args)
+            print(f"   ✅ 已上傳: {relative_path}")
+
 # ═══════════════════════════════════════════════════════
 # 確保被引入為模組時不會自動執行，僅在直接執行時觸發 ETL 管線
 # ═══════════════════════════════════════════════════════
 if __name__ == "__main__":
+  # 自動同步上傳！
+    sync_to_s3()
     run_pipeline()
