@@ -36,11 +36,19 @@ jobs:
       artifact-name: dashboard-output
 
     steps:
+    
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           # 完整 history，確保 git rev-parse --short HEAD 可用
           fetch-depth: 0
+
+      # 1. 在這裡增加這一步，換取短效憑證
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-northeast-1
 
       # ── 🔍 安全漏洞掃描 ──────────────────────────────────
       - name: Set up Python for audit
@@ -122,13 +130,18 @@ jobs:
 
       # ── 執行 ETL，將產出物寫到 ./output ──────────────────
       # main.py v2.4 會自動將 web/ 靜態文件複製到 output/
+      # 2. 修改 Run ETL 的步驟，將憑證注入進去
       - name: Run ETL pipeline in Docker
         run: |
           mkdir -p ${{ github.workspace }}/output
+          # 將 runner 的 AWS 環境變數傳進 Docker
           docker run --rm \
             -e TARGET_YEAR=${{ github.event.inputs.target_year || '115' }} \
             -e OUTPUT_DIR=/app/output \
             -e GITHUB_SHA=${{ github.sha }} \
+            -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN \
             -v ${{ github.workspace }}/output:/app/output \
             traffic-etl:ci
 
