@@ -1,964 +1,847 @@
 /**
- * app.js — 台灣交通事故 SaaS 分析平台 v3.2
+ * app-v3.3.fixed.js — 台灣交通事故 SaaS 分析平台
+ * v3.3 修正版
  *
- * 🎯 最終架構升級（v3.1 → v3.2）：
- * 
- * 核心理念：
- *  ✅ 單一 State Source（TrafficSaaS.state）
- *  ✅ Reactive UI Binding（state change → auto UI update）
- *  ✅ Service 層拆分（減少 AppController 耦合）
- *  ✅ Stateless Renderer（ChartManager）
- *  ✅ Cache Key Normalize（避免 miss）
- *  ✅ Error Bus（集中式錯誤管理）
- * 
- * 設計原則：
- *  1. TrafficSaaS.state = 唯一 source of truth
- *  2. Service 層 = pure business logic（無副作用）
- *  3. AppController = 輕量 orchestrator（只做協調）
- *  4. Reactive 系統 = state change auto trigger UI
+ * 修正重點：
+ * - this.state 正確接到 Proxy
+ * - 深層物件使用 WeakMap 快取，避免重複代理
+ * - 不再使用 __isProxy 汙染資料
+ * - effect 只在依賴變動時執行
+ * - batch 真的會合併 flush
+ * - computed cache 會正確失效
+ * - month / gender 篩選補齊
+ * - 加入 DOM / browser guard，避免環境錯誤
  */
 
-// ══════════════════════════════════════════════════════════════════
-// 類型定義
-// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// Core helpers
+// ══════════════════════════════════════════════
 
-/**
- * @typedef {Object} AppState
- * @property {Object} data - 資料層
- * @property {Object} ui - UI 狀態
- * @property {Object} cache - 快取
- */
+const queueMicrotaskSafe =
+    typeof queueMicrotask === 'function'
+        ? queueMicrotask
+        : (cb) => Promise.resolve().then(cb);
 
-// ══════════════════════════════════════════════════════════════════
-// ✅ 唯一 State Store（Single Source of Truth）
-// ══════════════════════════════════════════════════════════════════
+function safeGet(obj, path) {
+    return path.split('.').reduce((acc, key) => acc?.[key], obj);
+}
 
-const TrafficSaaS = {
-    config: {
-        API_BASE_URL: 'https://<API_ID>.execute-api.ap-northeast-1.amazonaws.com/prod',
-        SESSION_KEY: 'saas_demo_token',
-        CACHE_TTL: 5 * 60 * 1000,
-        MAX_RETRIES: 3,
-        RETRY_DELAY: 1000,
-    },
+function pathRelates(a, b) {
+    // a 與 b 只要是同一路徑、祖先、或子孫，都視為相關
+    return a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+}
 
-    /**
-     * ✅ v3.2 核心：單一 state owner
-     * 所有狀態都在這裡
-     */
-    state: {
-        // 資料層
-        data: {
-            dashboard: null,
-            isDataLoaded: false,
-        },
+function toNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+}
 
-        // 認證層
-        auth: {
-            isLoggedIn: false,
-            token: null,
-        },
+// ══════════════════════════════════════════════
+// 【核心 1】Reactive State Engine
+// ══════════════════════════════════════════════
 
-        // UI 層
-        ui: {
-            loading: false,
-            error: null,
-            chartsInitialized: false,
-            charts: { cause: null, trend: null, dynamic: null },
-        },
+class ReactiveState {
+    constructor(initialState = {}) {
+        this.subscribers = new Map(); // path -> Set<callback>
+        this.effects = new Set(); // { fn, deps, cleanup, initialRun }
+        this.computedCache = new Map(); // key -> value
+        this.computedDeps = new Map(); // key -> Set<depPath>
 
-        // 篩選層
-        filters: {
-            current: { month: null, gender: null },
-            history: [],
-        },
+        this.rawToProxy = new WeakMap(); // raw object -> proxy
+        this.proxyToRaw = new WeakMap(); // proxy -> raw object
 
-        // 快取層
-        cache: new Map(),
+        this.pendingChanges = new Map(); // path -> { newValue, oldValue }
+        this.flushScheduled = false;
+        this.batchDepth = 0;
 
-        // 連接狀態
-        connectivity: {
-            isOnline: navigator.onLine,
-            lastOnlineTime: Date.now(),
-        },
-    },
+        // ✅ 正確把 state 接成 Proxy
+        this.state = this._createReactiveProxy(initialState);
+    }
 
-    // ✅ Reactive 訂閱系統
-    subscribers: new Map(),
+    _createReactiveProxy(obj, basePath = '') {
+        if (!obj || typeof obj !== 'object') return obj;
 
-    /**
-     * ✅ 訂閱狀態變化
-     * @param {string} path - 狀態路徑 e.g., 'ui.error', 'filters.current'
-     * @param {Function} callback - 回調函數
-     * @returns {Function} 取消訂閱函數
-     */
+        if (this.rawToProxy.has(obj)) {
+            return this.rawToProxy.get(obj);
+        }
+
+        const proxy = new Proxy(obj, {
+            get: (target, key, receiver) => {
+                const value = Reflect.get(target, key, receiver);
+
+                // 直接回傳原始內建值
+                if (value === null || typeof value !== 'object') {
+                    return value;
+                }
+
+                const childPath = basePath ? `${basePath}.${String(key)}` : String(key);
+                return this._createReactiveProxy(value, childPath);
+            },
+
+            set: (target, key, value, receiver) => {
+                const fullPath = basePath ? `${basePath}.${String(key)}` : String(key);
+                const oldValue = target[key];
+
+                const nextValue =
+                    value && typeof value === 'object'
+                        ? this._createReactiveProxy(value, fullPath)
+                        : value;
+
+                if (Object.is(oldValue, nextValue)) return true;
+
+                const ok = Reflect.set(target, key, nextValue, receiver);
+                if (ok) {
+                    this._queueChange(fullPath, nextValue, oldValue);
+                }
+                return ok;
+            },
+
+            deleteProperty: (target, key) => {
+                if (!Object.prototype.hasOwnProperty.call(target, key)) return true;
+
+                const fullPath = basePath ? `${basePath}.${String(key)}` : String(key);
+                const oldValue = target[key];
+                const ok = Reflect.deleteProperty(target, key);
+
+                if (ok) {
+                    this._queueChange(fullPath, undefined, oldValue);
+                }
+                return ok;
+            }
+        });
+
+        this.rawToProxy.set(obj, proxy);
+        this.proxyToRaw.set(proxy, obj);
+        return proxy;
+    }
+
+    _queueChange(path, newValue, oldValue) {
+        if (!this.pendingChanges.has(path)) {
+            this.pendingChanges.set(path, { newValue, oldValue });
+        } else {
+            // 保留最早 oldValue，更新 latest newValue
+            const prev = this.pendingChanges.get(path);
+            this.pendingChanges.set(path, { newValue, oldValue: prev.oldValue });
+        }
+
+        if (this.batchDepth > 0) return;
+
+        if (!this.flushScheduled) {
+            this.flushScheduled = true;
+            queueMicrotaskSafe(() => this._flush());
+        }
+    }
+
+    _flush() {
+        this.flushScheduled = false;
+        if (this.pendingChanges.size === 0) return;
+
+        const changes = new Map(this.pendingChanges);
+        this.pendingChanges.clear();
+
+        // 1) invalidate computed cache
+        for (const changedPath of changes.keys()) {
+            this._invalidateComputedDeps(changedPath);
+        }
+
+        // 2) notify subscribers once per flush
+        this._notifySubscribers(changes);
+
+        // 3) run matched effects
+        this._runEffects(changes);
+    }
+
+    _notifySubscribers(changes) {
+        const notifiedCallbacks = new Set();
+
+        for (const [subPath, callbacks] of this.subscribers.entries()) {
+            let matchedChange = null;
+
+            for (const [changedPath, change] of changes.entries()) {
+                if (pathRelates(subPath, changedPath)) {
+                    matchedChange = { path: changedPath, ...change };
+                }
+            }
+
+            if (!matchedChange) continue;
+
+            for (const cb of callbacks) {
+                if (notifiedCallbacks.has(cb)) continue;
+                notifiedCallbacks.add(cb);
+
+                try {
+                    cb(matchedChange.newValue, matchedChange.oldValue, matchedChange.path);
+                } catch (err) {
+                    console.error(`Subscriber error at ${subPath}:`, err);
+                }
+            }
+        }
+    }
+
+    _invalidateComputedDeps(changedPath) {
+        for (const [computedKey, deps] of this.computedDeps.entries()) {
+            for (const dep of deps) {
+                if (pathRelates(dep, changedPath)) {
+                    this.computedCache.delete(computedKey);
+                    break;
+                }
+            }
+        }
+    }
+
+    _runEffects(changes) {
+        for (const effect of this.effects) {
+            // deps=[] 只在註冊時跑一次，不在每次變動時重跑
+            if (effect.deps.size === 0) continue;
+
+            let shouldRun = false;
+            for (const dep of effect.deps) {
+                for (const changedPath of changes.keys()) {
+                    if (pathRelates(dep, changedPath)) {
+                        shouldRun = true;
+                        break;
+                    }
+                }
+                if (shouldRun) break;
+            }
+
+            if (!shouldRun) continue;
+
+            try {
+                if (typeof effect.cleanup === 'function') {
+                    effect.cleanup();
+                }
+                effect.cleanup = effect.fn() || null;
+            } catch (err) {
+                console.error('Effect error:', err);
+            }
+        }
+    }
+
     subscribe(path, callback) {
         if (!this.subscribers.has(path)) {
-            this.subscribers.set(path, []);
+            this.subscribers.set(path, new Set());
         }
-        this.subscribers.get(path).push(callback);
+        this.subscribers.get(path).add(callback);
 
-        // 返回取消訂閱函數
         return () => {
-            const callbacks = this.subscribers.get(path);
-            const index = callbacks.indexOf(callback);
-            if (index > -1) callbacks.splice(index, 1);
+            const set = this.subscribers.get(path);
+            if (!set) return;
+            set.delete(callback);
+            if (set.size === 0) this.subscribers.delete(path);
         };
-    },
+    }
 
-    /**
-     * ✅ 發布狀態變化（自動觸發訂閱者）
-     * @param {string} path - 狀態路徑
-     * @param {*} value - 新值
-     */
-    publish(path, value) {
-        // 更新狀態
-        const keys = path.split('.');
-        let current = this.state;
-        for (let i = 0; i < keys.length - 1; i++) {
-            current = current[keys[i]];
-        }
-        current[keys[keys.length - 1]] = value;
+    defineComputed(key, computeFn, dependencies = []) {
+        this.computedDeps.set(key, new Set(dependencies));
 
-        // 通知訂閱者
-        if (this.subscribers.has(path)) {
-            this.subscribers.get(path).forEach(cb => {
-                try {
-                    cb(value);
-                } catch (err) {
-                    Logger.error(`訂閱回調錯誤 (${path})`, err);
+        return {
+            get: () => {
+                if (this.computedCache.has(key)) {
+                    return this.computedCache.get(key);
                 }
-            });
-        }
-
-        Logger.debug(`📢 State Changed: ${path}`, value);
-    }
-};
-
-// ══════════════════════════════════════════════════════════════════
-// 日誌系統
-// ══════════════════════════════════════════════════════════════════
-const Logger = {
-    info: (msg, data = null) => {
-        const ts = new Date().toLocaleTimeString('zh-TW');
-        console.log(`[${ts}] ℹ️ ${msg}`, data || '');
-    },
-    warn: (msg, data = null) => {
-        const ts = new Date().toLocaleTimeString('zh-TW');
-        console.warn(`[${ts}] ⚠️ ${msg}`, data || '');
-    },
-    error: (msg, data = null) => {
-        const ts = new Date().toLocaleTimeString('zh-TW');
-        console.error(`[${ts}] ❌ ${msg}`, data || '');
-    },
-    debug: (msg, data = null) => {
-        const ts = new Date().toLocaleTimeString('zh-TW');
-        console.debug(`[${ts}] 🔍 ${msg}`, data || '');
-    }
-};
-
-// ══════════════════════════════════════════════════════════════════
-// ✅ Error Bus（集中式錯誤管理）
-// ══════════════════════════════════════════════════════════════════
-
-const ErrorBus = {
-    handlers: [],
-
-    /**
-     * 訂閱錯誤事件
-     */
-    on(handler) {
-        this.handlers.push(handler);
-        return () => {
-            this.handlers = this.handlers.filter(h => h !== handler);
-        };
-    },
-
-    /**
-     * 發出錯誤
-     */
-    emit(error, options = {}) {
-        const isCritical = options.critical || false;
-        const duration = options.duration || 5000;
-
-        Logger.error(error);
-
-        const errorObj = {
-            message: error,
-            timestamp: Date.now(),
-            critical: isCritical,
-            duration,
-        };
-
-        // 發布到狀態系統
-        TrafficSaaS.publish('ui.error', errorObj);
-
-        // 通知所有 error handler
-        this.handlers.forEach(handler => {
-            try {
-                handler(errorObj);
-            } catch (err) {
-                Logger.error('Error handler 失敗', err);
+                const value = computeFn(this.state);
+                this.computedCache.set(key, value);
+                return value;
             }
-        });
+        };
+    }
 
-        // 非 critical 錯誤自動清除
-        if (!isCritical && duration > 0) {
-            setTimeout(() => {
-                if (TrafficSaaS.state.ui.error === errorObj) {
-                    TrafficSaaS.publish('ui.error', null);
+    effect(fn, dependencies = []) {
+        const effect = {
+            fn,
+            deps: new Set(dependencies),
+            cleanup: null
+        };
+
+        this.effects.add(effect);
+
+        // 立即執行一次
+        try {
+            effect.cleanup = effect.fn() || null;
+        } catch (err) {
+            console.error('Effect init error:', err);
+        }
+
+        return () => {
+            if (typeof effect.cleanup === 'function') {
+                try {
+                    effect.cleanup();
+                } catch (err) {
+                    console.error('Effect cleanup error:', err);
                 }
-            }, duration);
+            }
+            this.effects.delete(effect);
+        };
+    }
+
+    batch(updateFn) {
+        this.batchDepth++;
+        try {
+            updateFn(this.state);
+        } finally {
+            this.batchDepth--;
+            if (this.batchDepth === 0 && this.pendingChanges.size > 0) {
+                this._flush();
+            }
         }
     }
-};
 
-// ══════════════════════════════════════════════════════════════════
-// DOM 工具
-// ══════════════════════════════════════════════════════════════════
-const DOM = {
-    get: (id) => {
-        const el = document.getElementById(id);
-        if (!el) Logger.warn(`DOM 元素不存在: #${id}`);
-        return el;
-    },
-
-    setText: (id, value) => {
-        const el = DOM.get(id);
-        if (el) el.textContent = value ?? '--';
-    },
-
-    setVisible: (id, visible) => {
-        const el = DOM.get(id);
-        if (el) el.style.display = visible ? 'block' : 'none';
-    },
-
-    on: (id, event, handler) => {
-        const el = DOM.get(id);
-        if (el) {
-            el.addEventListener(event, handler);
-            return () => el.removeEventListener(event, handler);
-        }
-        return () => {};
-    },
-
-    batch: (updates) => {
-        requestAnimationFrame(() => {
-            updates.forEach(({ id, text }) => DOM.setText(id, text));
-        });
+    getPath(path) {
+        return safeGet(this.state, path);
     }
+
+    setPath(path, value) {
+        const keys = path.split('.');
+        const lastKey = keys.pop();
+        let obj = this.state;
+
+        for (const key of keys) {
+            if (!(key in obj) || obj[key] == null || typeof obj[key] !== 'object') {
+                obj[key] = {};
+            }
+            obj = obj[key];
+        }
+
+        obj[lastKey] = value;
+    }
+}
+
+// ══════════════════════════════════════════════
+// 【核心 2】初始化 Global Reactive State
+// ══════════════════════════════════════════════
+
+const reactiveState = new ReactiveState({
+    data: {
+        dashboard: null,
+        isDataLoaded: false
+    },
+    auth: {
+        isLoggedIn: false,
+        token: null,
+        email: null
+    },
+    ui: {
+        loading: false,
+        error: null,
+        charts: {
+            cause: null,
+            trend: null,
+            dynamic: null
+        }
+    },
+    filters: {
+        current: {
+            month: '',
+            gender: ''
+        },
+        history: []
+    },
+    cache: new Map(),
+    connectivity: {
+        isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true
+    }
+});
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+        reactiveState.state.connectivity.isOnline = true;
+    });
+    window.addEventListener('offline', () => {
+        reactiveState.state.connectivity.isOnline = false;
+    });
+}
+
+// ══════════════════════════════════════════════
+// 【核心 3】Computed State
+// ══════════════════════════════════════════════
+
+const computedState = {
+    userStatusBadge: reactiveState.defineComputed(
+        'userStatusBadge',
+        (state) =>
+            state.auth.isLoggedIn
+                ? { text: '🟢 會員已登入', className: 'member' }
+                : { text: '🔴 訪客模式', className: 'guest' },
+        ['auth.isLoggedIn']
+    ),
+
+    dynamicChartTitle: reactiveState.defineComputed(
+        'dynamicChartTitle',
+        (state) => {
+            const { month, gender } = state.filters.current;
+            const monthText = month ? `${month} 月` : '全部月份';
+            const genderText = gender ? `${gender}性` : '全部性別';
+            return `${monthText} × ${genderText}`;
+        },
+        ['filters.current.month', 'filters.current.gender']
+    ),
+
+    filteredCauseData: reactiveState.defineComputed(
+        'filteredCauseData',
+        (state) => {
+            if (!state.data.dashboard) return [];
+            return DashboardService.applyFilters(
+                state.data.dashboard.cause_data,
+                state.filters.current
+            );
+        },
+        ['data.dashboard', 'filters.current.month', 'filters.current.gender']
+    )
 };
 
-// ══════════════════════════════════════════════════════════════════
-// ✅ API Client（純 API 層，無 state）
-// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// 【核心 4】Pure Service Layer
+// ══════════════════════════════════════════════
 
 const APIClient = {
-    async request(endpoint, options = {}, retries = 0) {
+    async fetch(url, options = {}) {
+        const res = await fetch(url, options);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    }
+};
+
+const AuthService = {
+    validateEmail(email) {
+        return typeof email === 'string' && email.includes('@');
+    },
+
+    generateDemoToken(email) {
+        // 嚴格來說這不是 pure，因為含 Date.now()
+        // 這裡保留 demo token 行為，但不要再宣稱是 pure function
+        return btoa(`demo:${email}:${Date.now()}`);
+    },
+
+    parseToken(token) {
         try {
-            if (!navigator.onLine) {
-                throw new Error('❌ 離線狀態');
-            }
-
-            const url = `${TrafficSaaS.config.API_BASE_URL}${endpoint}`;
-            const token = sessionStorage.getItem(TrafficSaaS.config.SESSION_KEY);
-
-            const res = await fetch(url, {
-                ...options,
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(token && { 'Authorization': `Bearer ${token}` }),
-                    ...options.headers,
-                }
-            });
-
-            if (!res.ok) {
-                if (res.status === 401) {
-                    ErrorBus.emit('登入已過期，請重新登入', { critical: true });
-                }
-                throw new Error(`HTTP ${res.status}`);
-            }
-
-            return await res.json();
-        } catch (err) {
-            if (retries < TrafficSaaS.config.MAX_RETRIES) {
-                Logger.warn(`🔄 重試 (${retries + 1}/${TrafficSaaS.config.MAX_RETRIES})`);
-                await new Promise(r => setTimeout(r, TrafficSaaS.config.RETRY_DELAY));
-                return this.request(endpoint, options, retries + 1);
-            }
-
-            throw err;
+            const decoded = atob(token);
+            const [, email] = decoded.split(':');
+            return email || null;
+        } catch {
+            return null;
         }
     },
 
-    async getDashboard() {
-        // ✅ 正式版：return this.request('/dashboard');
-        const res = await fetch('./dashboard_data.json');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
+    async login(email, password) {
+        if (!this.validateEmail(email)) {
+            throw new Error('Invalid email format');
+        }
+        if (!password) {
+            throw new Error('Password required');
+        }
+
+        const token = this.generateDemoToken(email);
+
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('saas_demo_token', token);
+        }
+
+        reactiveState.batch((state) => {
+            state.auth.isLoggedIn = true;
+            state.auth.token = token;
+            state.auth.email = email;
+            state.ui.error = null;
+        });
     },
 
-    async getCausesByFilter(filters = {}) {
-        // ✅ 正式版：
-        // const params = new URLSearchParams();
-        // if (filters.month) params.append('month', filters.month);
-        // if (filters.gender) params.append('gender', filters.gender);
-        // return this.request(`/causes?${params}`);
+    logout() {
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem('saas_demo_token');
+        }
 
-        // Demo 版本地聚合
-        const dashboardData = TrafficSaaS.state.data.dashboard;
-        if (!dashboardData) throw new Error('dashboardData 未載入');
+        reactiveState.batch((state) => {
+            state.auth.isLoggedIn = false;
+            state.auth.token = null;
+            state.auth.email = null;
+        });
+    }
+};
 
-        let filtered = [...dashboardData.cause_data];
+const DashboardService = {
+    async loadDashboard() {
+        try {
+            return await APIClient.fetch('./dashboard_data.json');
+        } catch (err) {
+            throw new Error(`Failed to load dashboard: ${err.message}`);
+        }
+    },
+
+    applyFilters(causeData, filters) {
+        if (!Array.isArray(causeData)) return [];
+
+        let filtered = [...causeData];
 
         if (filters.month) {
-            const monthNum = Number(filters.month);
-            const totalByMonth = dashboardData.monthly_trend
-                .filter(d => Number(d['月份']) === monthNum)
-                .reduce((acc, d) => acc + d['件數'], 0);
-            const totalAll = dashboardData.monthly_trend.reduce((acc, d) => acc + d['件數'], 0);
-            const ratio = (totalAll > 0 && totalByMonth > 0) ? totalByMonth / totalAll : 1;
-            filtered = filtered.map(d => ({ ...d, '件數': Math.round(d['件數'] * ratio) }));
+            filtered = filtered.filter((d) => {
+                const monthValue = d['月份'] ?? d['月'] ?? d.month ?? '';
+                return String(monthValue) === String(filters.month);
+            });
         }
 
         if (filters.gender) {
-            filtered = filtered.filter(d => d['性別'] === filters.gender);
+            filtered = filtered.filter((d) => d['性別'] === filters.gender);
         }
 
-        const aggregated = this._aggregate(filtered);
-        const top15 = Object.entries(aggregated).sort((a, b) => b[1] - a[1]).slice(0, 15);
+        return filtered;
+    },
 
-        return {
-            total: filtered.reduce((acc, d) => acc + d['件數'], 0),
-            data: top15.map(([cause, count]) => ({ 肇因: cause, 件數: count })),
-            filters
-        };
+    getTopCauses(causeData, n = 15) {
+        if (!Array.isArray(causeData)) return [];
+
+        const totals = {};
+        for (const d of causeData) {
+            const cause = d['肇因'];
+            const count = toNumber(d['件數']);
+            totals[cause] = (totals[cause] || 0) + count;
+        }
+
+        return Object.entries(totals)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, n)
+            .map(([cause]) => cause);
+    }
+};
+
+const SubscriptionService = {
+    validateEmail(email) {
+        return typeof email === 'string' && email.includes('@');
     },
 
     async subscribe(email) {
-        // ✅ 正式版：return this.request('/subscribe', { method: 'POST', body: JSON.stringify({ email }) });
-        await new Promise(r => setTimeout(r, 900));
-        return { success: true };
-    },
-
-    _aggregate(items) {
-        const map = new Map();
-        for (const item of items) {
-            map.set(item['肇因'], (map.get(item['肇因']) || 0) + item['件數']);
+        if (!this.validateEmail(email)) {
+            throw new Error('Invalid email');
         }
-        const result = {};
-        map.forEach((value, key) => { result[key] = value; });
-        return result;
+
+        await new Promise((r) => setTimeout(r, 900));
+
+        return {
+            success: true,
+            message: `✅ 訂閱請求已送出！請前往 ${email} 信箱確認。`
+        };
     }
 };
 
-// ══════════════════════════════════════════════════════════════════
-// ✅ Service 層拆分（減少 AppController 耦合）
-// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// 【核心 5】UI Service
+// ══════════════════════════════════════════════
 
-/**
- * ✅ 認證服務
- */
-const AuthService = {
-    async login(email, password) {
-        Logger.info('🔐 登入中', { email });
-
-        // 驗證
-        if (!email || !email.includes('@') || !password) {
-            throw new Error('Email 或密碼無效');
-        }
-
-        // Demo：生成 token
-        const fakeToken = btoa(`demo:${email}:${Date.now()}`);
-        sessionStorage.setItem(TrafficSaaS.config.SESSION_KEY, fakeToken);
-
-        TrafficSaaS.publish('auth.token', fakeToken);
-        TrafficSaaS.publish('auth.isLoggedIn', true);
-
-        Logger.info('✅ 登入成功');
-    },
-
-    async logout() {
-        Logger.info('🚪 登出中');
-
-        sessionStorage.removeItem(TrafficSaaS.config.SESSION_KEY);
-
-        TrafficSaaS.publish('auth.token', null);
-        TrafficSaaS.publish('auth.isLoggedIn', false);
-
-        Logger.info('✅ 已登出');
-    },
-
-    checkAuthOnLoad() {
-        const hash = window.location.hash.substring(1);
-        const params = new URLSearchParams(hash);
-
-        if (params.has('id_token')) {
-            sessionStorage.setItem(TrafficSaaS.config.SESSION_KEY, params.get('id_token'));
-            window.history.replaceState(null, null, window.location.pathname);
-        }
-
-        if (sessionStorage.getItem(TrafficSaaS.config.SESSION_KEY)) {
-            TrafficSaaS.publish('auth.isLoggedIn', true);
-        }
-    }
-};
-
-/**
- * ✅ 儀表板服務
- */
-const DashboardService = {
-    async loadDashboard() {
-        Logger.info('📥 載入儀表板');
-
-        TrafficSaaS.publish('ui.loading', true);
-
-        try {
-            const data = await APIClient.getDashboard();
-            TrafficSaaS.publish('data.dashboard', data);
-            TrafficSaaS.publish('data.isDataLoaded', true);
-            Logger.info('✅ 儀表板載入完成');
-        } catch (err) {
-            ErrorBus.emit(`儀表板載入失敗: ${err.message}`);
-            throw err;
-        } finally {
-            TrafficSaaS.publish('ui.loading', false);
-        }
-    },
-
-    /**
-     * ✅ 改進的快取機制（normalize key）
-     */
-    async applyFilters(month = null, gender = null) {
-        Logger.info('⚡ 執行查詢', { month, gender });
-
-        TrafficSaaS.publish('ui.loading', true);
-
-        try {
-            const filters = { month, gender };
-
-            // ✅ Normalize cache key
-            const cacheKey = `m:${filters.month ?? 'all'}|g:${filters.gender ?? 'all'}`;
-            const now = Date.now();
-            const cached = TrafficSaaS.state.cache.get(cacheKey);
-
-            if (cached && (now - cached.time < TrafficSaaS.config.CACHE_TTL)) {
-                Logger.debug('💾 使用快取');
-                TrafficSaaS.publish('filters.current', filters);
-                return cached.data;
-            }
-
-            // 取得新資料
-            const result = await APIClient.getCausesByFilter(filters);
-
-            // 存入快取
-            TrafficSaaS.state.cache.set(cacheKey, { data: result, time: now });
-
-            TrafficSaaS.publish('filters.current', filters);
-
-            return result;
-        } catch (err) {
-            ErrorBus.emit(`查詢失敗: ${err.message}`);
-            throw err;
-        } finally {
-            TrafficSaaS.publish('ui.loading', false);
-        }
-    }
-};
-
-/**
- * ✅ UI 服務
- */
 const UIService = {
-    renderStats(dashboardData) {
-        if (!dashboardData?.stats_summary) return;
+    renderStats(statsData) {
+        if (!statsData || typeof document === 'undefined') return;
 
-        const s = dashboardData.stats_summary;
-        DOM.batch([
-            { id: 'total-samples', text: s['最終可用樣本數'] },
-            { id: 'male-age', text: s['男性平均年齡'] },
-            { id: 'female-age', text: s['女性平均年齡'] },
-            { id: 'update-time', text: dashboardData.metadata?.update_time || '--' },
-            { id: 'git-sha', text: dashboardData.metadata?.git_sha || '--' },
-        ]);
+        const setText = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value ?? '--';
+        };
+
+        setText('total-samples', statsData['最終可用樣本數']);
+        setText('male-age', statsData['男性平均年齡']);
+        setText('female-age', statsData['女性平均年齡']);
+        setText('sig-level', statsData['效果量判讀'] || statsData['顯著性'] || '--');
     },
 
-    populateMonthFilter(dashboardData) {
-        if (!dashboardData?.monthly_trend) return;
+    renderCauseChart(causeData) {
+        if (!causeData || !window.echarts || typeof document === 'undefined') return;
 
-        const months = [...new Set(dashboardData.monthly_trend.map(d => d['月份']))]
-            .sort((a, b) => a - b);
+        const el = document.getElementById('cause-chart');
+        if (!el) return;
 
-        const sel = DOM.get('filter-month');
-        if (!sel) return;
+        const chart = echarts.getInstanceByDom(el) || echarts.init(el);
 
-        months.forEach(m => {
-            const opt = document.createElement('option');
-            opt.value = m;
-            opt.textContent = `${m} 月`;
-            sel.appendChild(opt);
-        });
-    },
+        const causes = [...new Set(causeData.map((d) => d['肇因']))].reverse();
+        const COLOR = { '男': '#3A86FF', '女': '#FF6B9D' };
 
-    showWarnings(dashboardData) {
-        if (!dashboardData?.metadata?.incomplete_months) return;
-
-        const incomplete = dashboardData.metadata.incomplete_months;
-        if (incomplete.length > 0) {
-            const tag = DOM.get('monthly-warning');
-            if (tag) {
-                tag.textContent = `⚠️ ${incomplete.join('、')} 月資料不完整`;
-                DOM.setVisible('monthly-warning', true);
-            }
-        }
-    },
-
-    updateFilterResult(result) {
-        const { month, gender } = result.filters;
-        const monthText = month ? `${month} 月` : '全部月份';
-        const genderText = gender ? `${gender}性` : '全部性別';
-
-        const resultEl = DOM.get('dynamic-result');
-        if (resultEl) {
-            resultEl.textContent = `篩選：${monthText} × ${genderText} | 合計：${result.total.toLocaleString()} 件`;
-            DOM.setVisible('dynamic-result', true);
-        }
-    }
-};
-
-// ══════════════════════════════════════════════════════════════════
-// ✅ Stateless Chart Manager（純 renderer）
-// ══════════════════════════════════════════════════════════════════
-
-const ChartManager = {
-    COLOR: { '男': '#3A86FF', '女': '#FF6B9D' },
-    _resizeHandler: null,
-
-    /**
-     * 初始化圖表實例
-     */
-    async initCharts() {
-        Logger.info('📊 初始化圖表');
-
-        const causeEl = DOM.get('cause-chart');
-        const trendEl = DOM.get('trend-chart');
-        const dynamicEl = DOM.get('dynamic-chart');
-
-        if (!causeEl || !trendEl || !dynamicEl) {
-            throw new Error('圖表容器不存在');
-        }
-
-        TrafficSaaS.state.ui.charts.cause = echarts.init(causeEl);
-        TrafficSaaS.state.ui.charts.trend = echarts.init(trendEl);
-        TrafficSaaS.state.ui.charts.dynamic = echarts.init(dynamicEl);
-
-        this._resizeHandler = () => this.resizeAll();
-        window.addEventListener('resize', this._resizeHandler);
-
-        TrafficSaaS.publish('ui.chartsInitialized', true);
-
-        Logger.info('✅ 圖表初始化完成');
-    },
-
-    resizeAll() {
-        Object.values(TrafficSaaS.state.ui.charts).forEach(chart => {
-            if (chart) chart.resize();
-        });
-    },
-
-    /**
-     * 完整清理
-     */
-    disposeAll() {
-        Logger.info('🧹 清理圖表');
-
-        if (this._resizeHandler) {
-            window.removeEventListener('resize', this._resizeHandler);
-        }
-
-        Object.values(TrafficSaaS.state.ui.charts).forEach(chart => {
-            if (chart) chart.dispose();
-        });
-
-        TrafficSaaS.publish('ui.charts', { cause: null, trend: null, dynamic: null });
-        TrafficSaaS.publish('ui.chartsInitialized', false);
-    },
-
-    /**
-     * ✅ Stateless render：接收 data，無副作用
-     */
-    renderCauseChart(causes) {
-        const chart = TrafficSaaS.state.ui.charts.cause;
-        if (!chart) return;
-
-        const causeNames = causes.map(d => d['肇因']);
-        const causeMap = new Map(causes.map(d => [d['肇因'], d['件數']]));
-
-        chart.setOption({
-            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-            legend: { data: ['男', '女'] },
-            grid: { left: '2%', right: '5%', bottom: '3%', top: '40px', containLabel: true },
-            xAxis: { type: 'value', name: '件數' },
-            yAxis: { type: 'category', data: causeNames, axisLabel: { fontSize: 11 } },
-            series: ['男', '女'].map(g => ({
-                name: g,
-                type: 'bar',
-                data: causeNames.map(c => causeMap.get(c) || 0),
-                itemStyle: { color: this.COLOR[g] },
-            })),
-        });
-
-        chart.resize();
-    },
-
-    renderTrendChart(monthlyTrend, incomplete = []) {
-        const chart = TrafficSaaS.state.ui.charts.trend;
-        if (!chart) return;
-
-        const months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        const trendMap = new Map(
-            monthlyTrend.map(d => [`${d['性別']}_${d['月份']}`, d['件數']])
-        );
-
-        chart.setOption({
-            tooltip: { trigger: 'axis' },
-            legend: { data: ['男', '女'] },
-            xAxis: { type: 'category', data: months.map(m => `${m}月`) },
-            yAxis: { type: 'value', name: '件數' },
-            series: ['男', '女'].map(g => {
-                const markPoints = incomplete
-                    .map(m => {
-                        const val = trendMap.get(`男_${m}`);
-                        if (val == null) return null;
-                        return {
-                            coord: [`${m}月`, val],
-                            symbol: 'pin',
-                            symbolSize: 28,
-                            itemStyle: { color: '#f59e0b' },
-                            label: { show: false },
-                        };
-                    })
-                    .filter(item => item !== null);
-
-                return {
-                    name: g,
-                    type: 'line',
-                    smooth: true,
-                    data: months.map(m => trendMap.get(`${g}_${m}`) || null),
-                    itemStyle: { color: this.COLOR[g] },
-                    markPoint: g === '男' ? { data: markPoints } : {},
-                };
+        const series = ['男', '女'].map((g) => ({
+            name: g,
+            type: 'bar',
+            data: causes.map((c) => {
+                const item = causeData.find((d) => d['肇因'] === c && d['性別'] === g);
+                return item ? toNumber(item['件數']) : 0;
             }),
-        });
-
-        chart.resize();
-    },
-
-    renderDynamicChart(result) {
-        const chart = TrafficSaaS.state.ui.charts.dynamic;
-        if (!chart) return;
-
-        if (!result.data || result.data.length === 0) {
-            chart.setOption({ series: [] });
-            return;
-        }
-
-        const causes = result.data.map(d => d['肇因']);
-        const counts = result.data.map(d => d['件數']);
+            itemStyle: { color: COLOR[g] }
+        }));
 
         chart.setOption({
             tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-            grid: { left: '2%', right: '5%', bottom: '3%', top: '40px', containLabel: true },
+            legend: { data: ['男', '女'] },
             xAxis: { type: 'value', name: '件數' },
             yAxis: { type: 'category', data: causes, axisLabel: { fontSize: 11 } },
-            series: [{
-                name: '件數',
-                type: 'bar',
-                data: counts,
-                itemStyle: { color: '#3A86FF' },
-            }],
+            series
         });
 
         chart.resize();
-    }
-};
+    },
 
-// ══════════════════════════════════════════════════════════════════
-// ✅ 輕量 AppController（純 orchestrator）
-// ══════════════════════════════════════════════════════════════════
+    showError(message) {
+        if (typeof document === 'undefined') return;
 
-const AppController = {
-    _eventListeners: [],
-
-    /**
-     * 應用初始化
-     */
-    async init() {
-        Logger.info('🚀 應用初始化');
-
-        try {
-            // 1. 初始化圖表
-            await ChartManager.initCharts();
-
-            // 2. 載入資料
-            await DashboardService.loadDashboard();
-
-            // 3. 檢查認證
-            AuthService.checkAuthOnLoad();
-
-            // 4. 綁定事件
-            this.bindEvents();
-
-            // 5. 線上狀態監聽
-            this.setupConnectivityListeners();
-
-            // 6. 設置 reactive 訂閱
-            this.setupReactiveBindings();
-
-            Logger.info('✅ 應用初始化完成');
-        } catch (err) {
-            ErrorBus.emit(`初始化失敗: ${err.message}`, { critical: true });
+        const el = document.getElementById('error-banner');
+        if (el) {
+            el.textContent = `⚠️ ${message}`;
+            el.style.display = 'block';
         }
     },
 
-    /**
-     * ✅ Reactive UI Binding（state change auto update）
-     */
-    setupReactiveBindings() {
-        Logger.info('📡 設置 reactive 綁定');
+    clearError() {
+        if (typeof document === 'undefined') return;
 
-        // 資料變化 → 更新 UI
-        TrafficSaaS.subscribe('data.dashboard', (data) => {
-            if (data) {
-                UIService.renderStats(data);
-                UIService.populateMonthFilter(data);
-                UIService.showWarnings(data);
-
-                // 重新渲染圖表
-                ChartManager.renderCauseChart(data.cause_data);
-                ChartManager.renderTrendChart(data.monthly_trend, data.metadata?.incomplete_months || []);
-            }
-        });
-
-        // UI 狀態變化 → 更新 loading 指示器
-        TrafficSaaS.subscribe('ui.loading', (loading) => {
-            if (loading) {
-                const banner = DOM.get('error-banner');
-                if (banner) {
-                    banner.textContent = '⏳ 載入中...';
-                    banner.style.color = '#3b82f6';
-                    DOM.setVisible('error-banner', true);
-                }
-            }
-        });
-
-        // 錯誤狀態變化 → 顯示錯誤
-        TrafficSaaS.subscribe('ui.error', (error) => {
-            if (error) {
-                const banner = DOM.get('error-banner');
-                if (banner) {
-                    banner.textContent = `❌ ${error.message}`;
-                    banner.style.color = error.critical ? '#dc2626' : '#ef4444';
-                    DOM.setVisible('error-banner', true);
-                }
-            } else {
-                DOM.setVisible('error-banner', false);
-            }
-        });
-
-        // 認證狀態變化 → 更新 UI
-        TrafficSaaS.subscribe('auth.isLoggedIn', (isLoggedIn) => {
-            const badge = DOM.get('user-status');
-            if (badge) {
-                if (isLoggedIn) {
-                    badge.textContent = '🟢 會員已登入';
-                    badge.className = 'user-badge member';
-                    DOM.setVisible('login-btn', false);
-                    DOM.setVisible('logout-btn', true);
-
-                    const section = DOM.get('premium-section');
-                    if (section) {
-                        section.classList.remove('locked');
-                        section.classList.add('unlocked');
-                    }
-                } else {
-                    badge.textContent = '🔴 訪客模式';
-                    badge.className = 'user-badge guest';
-                    DOM.setVisible('login-btn', true);
-                    DOM.setVisible('logout-btn', false);
-
-                    const section = DOM.get('premium-section');
-                    if (section) {
-                        section.classList.remove('unlocked');
-                        section.classList.add('locked');
-                    }
-                }
-            }
-        });
-
-        // 篩選變化 → 重新渲染動態圖表
-        TrafficSaaS.subscribe('filters.current', async (filters) => {
-            if (TrafficSaaS.state.auth.isLoggedIn) {
-                try {
-                    const result = await DashboardService.applyFilters(filters.month, filters.gender);
-                    ChartManager.renderDynamicChart(result);
-                    UIService.updateFilterResult(result);
-                } catch (err) {
-                    Logger.error('篩選渲染失敗', err);
-                }
-            }
-        });
-    },
-
-    /**
-     * 綁定事件
-     */
-    bindEvents() {
-        Logger.info('🔗 綁定事件');
-
-        // 登入
-        this._eventListeners.push(
-            DOM.on('do-login-btn', 'click', async () => {
-                const email = DOM.get('login-email')?.value.trim() || '';
-                const password = DOM.get('login-password')?.value || '';
-
-                try {
-                    await AuthService.login(email, password);
-                    DOM.setVisible('login-modal', false);
-                } catch (err) {
-                    const errEl = DOM.get('login-error');
-                    if (errEl) {
-                        errEl.textContent = err.message;
-                        errEl.style.display = 'block';
-                    }
-                }
-            })
-        );
-
-        this._eventListeners.push(
-            DOM.on('logout-btn', 'click', async () => {
-                await AuthService.logout();
-            })
-        );
-
-        // Modal
-        this._eventListeners.push(
-            DOM.on('login-btn', 'click', () => DOM.setVisible('login-modal', true))
-        );
-        this._eventListeners.push(
-            DOM.on('cancel-login-btn', 'click', () => DOM.setVisible('login-modal', false))
-        );
-
-        // Enter 鍵登入
-        ['login-email', 'login-password'].forEach(id => {
-            this._eventListeners.push(
-                DOM.on(id, 'keydown', e => {
-                    if (e.key === 'Enter') DOM.get('do-login-btn')?.click();
-                })
-            );
-        });
-
-        // 訂閱
-        this._eventListeners.push(
-            DOM.on('sub-btn', 'click', async () => {
-                const email = DOM.get('sub-email')?.value.trim() || '';
-
-                if (!email || !email.includes('@')) {
-                    ErrorBus.emit('請輸入有效的 Email');
-                    return;
-                }
-
-                const btn = DOM.get('sub-btn');
-                if (btn) btn.disabled = true;
-
-                try {
-                    await APIClient.subscribe(email);
-                    const result = DOM.get('sub-result');
-                    if (result) {
-                        result.textContent = `✅ 訂閱成功！請至 ${email} 確認`;
-                        result.className = 'sub-result success';
-                        result.style.display = 'block';
-                    }
-                    if (DOM.get('sub-email')) DOM.get('sub-email').value = '';
-                } catch (err) {
-                    ErrorBus.emit(`訂閱失敗: ${err.message}`);
-                } finally {
-                    if (btn) btn.disabled = false;
-                }
-            })
-        );
-
-        // 動態查詢
-        this._eventListeners.push(
-            DOM.on('query-btn', 'click', async () => {
-                const month = DOM.get('filter-month')?.value || null;
-                const gender = DOM.get('filter-gender')?.value || null;
-
-                const btn = DOM.get('query-btn');
-                if (btn) btn.disabled = true;
-
-                try {
-                    const result = await DashboardService.applyFilters(month, gender);
-                    TrafficSaaS.publish('filters.current', { month, gender });
-                    ChartManager.renderDynamicChart(result);
-                    UIService.updateFilterResult(result);
-                } finally {
-                    if (btn) btn.disabled = false;
-                }
-            })
-        );
-    },
-
-    /**
-     * 線上狀態監聽
-     */
-    setupConnectivityListeners() {
-        window.addEventListener('online', () => {
-            Logger.info('🌐 恢復線上');
-            TrafficSaaS.publish('connectivity.isOnline', true);
-        });
-
-        window.addEventListener('offline', () => {
-            Logger.warn('📴 進入離線');
-            TrafficSaaS.publish('connectivity.isOnline', false);
-            ErrorBus.emit('離線狀態 - 部分功能不可用');
-        });
-    },
-
-    /**
-     * 清理
-     */
-    cleanup() {
-        Logger.info('🧹 清理資源');
-
-        this._eventListeners.forEach(unsub => {
-            if (typeof unsub === 'function') unsub();
-        });
-
-        ChartManager.disposeAll();
-        TrafficSaaS.state.cache.clear();
+        const el = document.getElementById('error-banner');
+        if (el) {
+            el.style.display = 'none';
+        }
     }
 };
 
-// ══════════════════════════════════════════════════════════════════
-// 初始化
-// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// 【核心 6】Effects
+// ══════════════════════════════════════════════
+
+function setupReactiveEffects() {
+    // Effect 1: 初次載入資料
+    reactiveState.effect(
+        () => {
+            if (reactiveState.state.data.isDataLoaded || reactiveState.state.ui.loading) return;
+
+            (async () => {
+                try {
+                    reactiveState.state.ui.loading = true;
+
+                    const data = await DashboardService.loadDashboard();
+
+                    reactiveState.batch((state) => {
+                        state.data.dashboard = data;
+                        state.data.isDataLoaded = true;
+                        state.ui.loading = false;
+                        state.ui.error = null;
+                    });
+                } catch (err) {
+                    reactiveState.batch((state) => {
+                        state.ui.error = err.message;
+                        state.ui.loading = false;
+                    });
+                }
+            })();
+        },
+        [] // 只在初始化跑一次
+    );
+
+    // Effect 2: 渲染統計數字
+    reactiveState.effect(
+        () => {
+            const dashboard = reactiveState.state.data.dashboard;
+            if (dashboard?.stats_summary) {
+                UIService.renderStats(dashboard.stats_summary);
+            }
+        },
+        ['data.dashboard']
+    );
+
+    // Effect 3: 認證狀態變化
+    reactiveState.effect(
+        () => {
+            if (typeof document === 'undefined') return;
+
+            const badge = computedState.userStatusBadge.get();
+            const badgeEl = document.getElementById('user-status');
+
+            if (badgeEl) {
+                badgeEl.textContent = badge.text;
+                badgeEl.className = `user-badge ${badge.className}`;
+            }
+
+            const loginBtn = document.getElementById('login-btn');
+            const logoutBtn = document.getElementById('logout-btn');
+
+            if (loginBtn) loginBtn.style.display = reactiveState.state.auth.isLoggedIn ? 'none' : 'inline-block';
+            if (logoutBtn) logoutBtn.style.display = reactiveState.state.auth.isLoggedIn ? 'inline-block' : 'none';
+
+            const section = document.getElementById('premium-section');
+            if (section) {
+                if (reactiveState.state.auth.isLoggedIn) {
+                    section.classList.remove('locked');
+                    section.classList.add('unlocked');
+                } else {
+                    section.classList.remove('unlocked');
+                    section.classList.add('locked');
+                }
+            }
+        },
+        ['auth.isLoggedIn']
+    );
+
+    // Effect 4: 錯誤提示
+    reactiveState.effect(
+        () => {
+            const error = reactiveState.state.ui.error;
+            if (error) UIService.showError(error);
+            else UIService.clearError();
+        },
+        ['ui.error']
+    );
+
+    // Effect 5: 篩選變化 → 重繪圖表
+    reactiveState.effect(
+        () => {
+            const dashboard = reactiveState.state.data.dashboard;
+            if (dashboard?.cause_data) {
+                const filtered = computedState.filteredCauseData.get();
+                UIService.renderCauseChart(filtered);
+            }
+        },
+        ['data.dashboard', 'filters.current.month', 'filters.current.gender']
+    );
+
+    // Effect 6: loading 狀態
+    reactiveState.effect(
+        () => {
+            if (typeof document === 'undefined') return;
+
+            const loaderEl = document.getElementById('loader');
+            if (loaderEl) {
+                loaderEl.style.display = reactiveState.state.ui.loading ? 'block' : 'none';
+            }
+        },
+        ['ui.loading']
+    );
+}
+
+// ══════════════════════════════════════════════
+// 【核心 7】Events
+// ══════════════════════════════════════════════
+
+function bindEvents() {
+    if (typeof document === 'undefined') return;
+
+    document.getElementById('login-btn')?.addEventListener('click', () => {
+        const modal = document.getElementById('login-modal');
+        if (modal) modal.style.display = 'flex';
+
+        setTimeout(() => document.getElementById('login-email')?.focus(), 50);
+    });
+
+    document.getElementById('cancel-login-btn')?.addEventListener('click', () => {
+        const modal = document.getElementById('login-modal');
+        const err = document.getElementById('login-error');
+
+        if (modal) modal.style.display = 'none';
+        if (err) err.style.display = 'none';
+    });
+
+    document.getElementById('do-login-btn')?.addEventListener('click', async () => {
+        const email = document.getElementById('login-email')?.value.trim() ?? '';
+        const password = document.getElementById('login-password')?.value ?? '';
+        const errEl = document.getElementById('login-error');
+
+        try {
+            await AuthService.login(email, password);
+
+            const modal = document.getElementById('login-modal');
+            if (modal) modal.style.display = 'none';
+            if (errEl) errEl.style.display = 'none';
+
+            // 如需登入後強制重繪，可保留這段
+            setTimeout(() => {
+                const dashboard = reactiveState.state.data.dashboard;
+                if (dashboard?.cause_data) {
+                    UIService.renderCauseChart(computedState.filteredCauseData.get());
+                }
+            }, 100);
+        } catch (err) {
+            if (errEl) {
+                errEl.textContent = err.message;
+                errEl.style.display = 'block';
+            }
+        }
+    });
+
+    document.getElementById('logout-btn')?.addEventListener('click', () => {
+        AuthService.logout();
+    });
+
+    ['login-email', 'login-password'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('do-login-btn')?.click();
+        });
+    });
+
+    document.getElementById('login-modal')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) {
+            e.currentTarget.style.display = 'none';
+        }
+    });
+
+    document.getElementById('sub-btn')?.addEventListener('click', async () => {
+        const email = document.getElementById('sub-email')?.value.trim() ?? '';
+        const btn = document.getElementById('sub-btn');
+        const resultEl = document.getElementById('sub-result');
+
+        try {
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '送出中...';
+            }
+
+            const result = await SubscriptionService.subscribe(email);
+
+            if (resultEl) {
+                resultEl.textContent = result.message;
+                resultEl.className = 'sub-result success';
+                resultEl.style.display = 'block';
+            }
+
+            const input = document.getElementById('sub-email');
+            if (input) input.value = '';
+        } catch (err) {
+            if (resultEl) {
+                resultEl.textContent = `❌ ${err.message}`;
+                resultEl.className = 'sub-result error';
+                resultEl.style.display = 'block';
+            }
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '訂閱推播';
+            }
+        }
+    });
+
+    document.getElementById('query-btn')?.addEventListener('click', () => {
+        const month = document.getElementById('filter-month')?.value ?? '';
+        const gender = document.getElementById('filter-gender')?.value ?? '';
+
+        reactiveState.state.filters.current = { month, gender };
+    });
+}
+
+// ══════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
-    AppController.init();
+    setupReactiveEffects();
+    bindEvents();
+
+    if (window.echarts && typeof document !== 'undefined') {
+        const causeEl = document.getElementById('cause-chart');
+        const trendEl = document.getElementById('trend-chart');
+        const dynamicEl = document.getElementById('dynamic-chart');
+
+        if (causeEl) reactiveState.state.ui.charts.cause = echarts.init(causeEl);
+        if (trendEl) reactiveState.state.ui.charts.trend = echarts.init(trendEl);
+        if (dynamicEl) reactiveState.state.ui.charts.dynamic = echarts.init(dynamicEl);
+
+        window.addEventListener('resize', () => {
+            Object.values(reactiveState.state.ui.charts).forEach((chart) => chart?.resize?.());
+        });
+    }
+
+    // 觸發初始載入
+    reactiveState.state.data.isDataLoaded = false;
 });
 
-window.addEventListener('beforeunload', () => {
-    AppController.cleanup();
-});
-
-// ══════════════════════════════════════════════════════════════════
-// 全域暴露
-// ══════════════════════════════════════════════════════════════════
-
-window.TrafficSaaS = TrafficSaaS;
-window.AppController = AppController;
-window.Logger = Logger;
-window.ErrorBus = ErrorBus;
-window.DashboardService = DashboardService;
-window.AuthService = AuthService;
+// 暴露全域方法（向後相容）
+if (typeof window !== 'undefined') {
+    window.reactiveState = reactiveState;
+    window.AuthService = AuthService;
+}
