@@ -53,7 +53,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest  # <--- 專為 CI 環境安裝測試框架
 
       - name: 🔍 Security audit
         run: |
