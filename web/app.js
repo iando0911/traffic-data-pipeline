@@ -7,6 +7,14 @@
  *  3. 動態篩選：依月份 + 性別即時重算圖表（client-side；正式版接 API Gateway）
  *  4. 訂閱推播：送出 Email → 模擬 AWS SNS 訂閱流程
  *  5. 月份完整性警示、git SHA 可追溯性顯示
+ *
+ * 修正日期：2026-06-07
+ * 修正內容：
+ *  ✅ 統一狀態管理到 TrafficSaaS.state（移除重複的全域變數）
+ *  ✅ 修復月份資料類型不一致導致的比對失敗
+ *  ✅ bindEvents 加入可選鏈操作符防禦
+ *  ✅ renderDynamicChart ratio 邏輯優化
+ *  ✅ markPoint 值提取優化
  */
 
 // ══════════════════════════════════════════════
@@ -36,12 +44,13 @@ const COGNITO_LOGIN_URL = TrafficSaaS.config.COGNITO_LOGIN_URL;
 const DEMO_EMAIL = TrafficSaaS.config.DEMO_EMAIL;
 const SESSION_KEY = TrafficSaaS.config.SESSION_KEY;
 
-// 簡化狀態別名
-let dashboardData = null;
-let isLoggedIn = false;
-let dynamicChart = null;
-let causeChart = null;
-let trendChart = null;
+// ✅ 移除重複的全域變數（統一使用 TrafficSaaS.state）
+// 舊代碼已刪除：
+// let dashboardData = null;
+// let isLoggedIn = false;
+// let dynamicChart = null;
+// let causeChart = null;
+// let trendChart = null;
 
 // ══════════════════════════════════════════════
 // 初始化
@@ -55,14 +64,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // ── ECharts 實例（先建立，確保元素可見時尺寸正確）──
 function initCharts() {
-    causeChart   = echarts.init(document.getElementById('cause-chart'));
-    trendChart   = echarts.init(document.getElementById('trend-chart'));
-    dynamicChart = echarts.init(document.getElementById('dynamic-chart'));
+    TrafficSaaS.state.causeChart   = echarts.init(document.getElementById('cause-chart'));
+    TrafficSaaS.state.trendChart   = echarts.init(document.getElementById('trend-chart'));
+    TrafficSaaS.state.dynamicChart = echarts.init(document.getElementById('dynamic-chart'));
 
     window.addEventListener('resize', () => {
-        causeChart.resize();
-        trendChart.resize();
-        dynamicChart.resize();
+        TrafficSaaS.state.causeChart?.resize();
+        TrafficSaaS.state.trendChart?.resize();
+        TrafficSaaS.state.dynamicChart?.resize();
     });
 }
 
@@ -71,7 +80,7 @@ async function loadData() {
     try {
         const res = await fetch('./dashboard_data.json');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        dashboardData = await res.json();
+        TrafficSaaS.state.dashboardData = await res.json();
 
         renderPublicStats();
         populateMonthFilter();
@@ -79,13 +88,18 @@ async function loadData() {
 
     } catch (err) {
         const banner = document.getElementById('error-banner');
-        banner.textContent = `⚠️ 資料載入失敗（${err.message}），請稍後重整頁面。`;
-        banner.style.display = 'block';
+        if (banner) {
+            banner.textContent = `⚠️ 資料載入失敗（${err.message}），請稍後重整頁面。`;
+            banner.style.display = 'block';
+        }
     }
 }
 
 // ── 渲染公開統計數字 ─────────────────────────────
 function renderPublicStats() {
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData) return;
+
     const s = dashboardData.stats_summary;
     setText('total-samples', s['最終可用樣本數']);
     setText('male-age',      s['男性平均年齡']);
@@ -99,11 +113,16 @@ function renderPublicStats() {
 
 // ── 填充月份下拉選單 ──────────────────────────────
 function populateMonthFilter() {
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData) return;
+
     const months = [...new Set(
         dashboardData.monthly_trend.map(d => d['月份'])
     )].sort((a, b) => a - b);
 
     const sel = document.getElementById('filter-month');
+    if (!sel) return;
+
     months.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m;
@@ -114,11 +133,16 @@ function populateMonthFilter() {
 
 // ── 月份完整性警示 ────────────────────────────────
 function checkDataWarnings() {
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData) return;
+
     const incomplete = dashboardData.metadata.incomplete_months || [];
     if (incomplete.length > 0) {
         const tag = document.getElementById('monthly-warning');
-        tag.textContent = `⚠️ ${incomplete.join('、')} 月資料不完整`;
-        tag.style.display = 'inline-block';
+        if (tag) {
+            tag.textContent = `⚠️ ${incomplete.join('、')} 月資料不完整`;
+            tag.style.display = 'inline-block';
+        }
     }
 }
 
@@ -147,20 +171,33 @@ function checkAuthOnLoad() {
 }
 
 function openLoginModal() {
-    document.getElementById('login-modal').style.display = 'flex';
-    setTimeout(() => document.getElementById('login-email').focus(), 50);
+    const modal = document.getElementById('login-modal');
+    if (modal) {
+        modal.style.display = 'flex';
+        setTimeout(() => {
+            const emailInput = document.getElementById('login-email');
+            emailInput?.focus();
+        }, 50);
+    }
 }
 
 function closeLoginModal() {
-    document.getElementById('login-modal').style.display = 'none';
-    document.getElementById('login-error').style.display = 'none';
+    const modal = document.getElementById('login-modal');
+    const errorEl = document.getElementById('login-error');
+    if (modal) modal.style.display = 'none';
+    if (errorEl) errorEl.style.display = 'none';
 }
 
 /** Demo 登入：任何 email + 任意密碼 → 成功；格式錯誤 → 失敗 */
 function doLogin() {
-    const email = document.getElementById('login-email').value.trim();
-    const pass  = document.getElementById('login-password').value;
+    const emailInput = document.getElementById('login-email');
+    const passInput = document.getElementById('login-password');
     const errEl = document.getElementById('login-error');
+
+    if (!emailInput || !passInput || !errEl) return;
+
+    const email = emailInput.value.trim();
+    const pass  = passInput.value;
 
     // 基本驗證
     if (!email || !email.includes('@')) {
@@ -190,38 +227,50 @@ function doLogin() {
 }
 
 function applyLoggedInUI() {
-    isLoggedIn = true;
+    TrafficSaaS.state.isLoggedIn = true;
 
     // 更新導覽列
     const badge  = document.getElementById('user-status');
-    badge.textContent = '🟢 會員已登入';
-    badge.className   = 'user-badge member';
+    if (badge) {
+        badge.textContent = '🟢 會員已登入';
+        badge.className   = 'user-badge member';
+    }
 
-    document.getElementById('login-btn').style.display  = 'none';
-    document.getElementById('logout-btn').style.display = 'inline-block';
+    const loginBtn = document.getElementById('login-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (loginBtn) loginBtn.style.display  = 'none';
+    if (logoutBtn) logoutBtn.style.display = 'inline-block';
 
     // 解除鎖定
     const section = document.getElementById('premium-section');
-    section.classList.remove('locked');
-    section.classList.add('unlocked');
+    if (section) {
+        section.classList.remove('locked');
+        section.classList.add('unlocked');
+    }
 }
 
 function doLogout() {
     sessionStorage.removeItem(SESSION_KEY);
-    isLoggedIn = false;
+    TrafficSaaS.state.isLoggedIn = false;
 
     // 重設導覽列
     const badge = document.getElementById('user-status');
-    badge.textContent = '🔴 訪客模式';
-    badge.className   = 'user-badge guest';
+    if (badge) {
+        badge.textContent = '🔴 訪客模式';
+        badge.className   = 'user-badge guest';
+    }
 
-    document.getElementById('login-btn').style.display  = 'inline-block';
-    document.getElementById('logout-btn').style.display = 'none';
+    const loginBtn = document.getElementById('login-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (loginBtn) loginBtn.style.display  = 'inline-block';
+    if (logoutBtn) logoutBtn.style.display = 'none';
 
     // 重新上鎖
     const section = document.getElementById('premium-section');
-    section.classList.remove('unlocked');
-    section.classList.add('locked');
+    if (section) {
+        section.classList.remove('unlocked');
+        section.classList.add('locked');
+    }
 }
 
 // ══════════════════════════════════════════════
@@ -231,7 +280,8 @@ const COLOR = { '男': '#3A86FF', '女': '#FF6B9D' };
 
 // ── 肇因 TOP 15 長條圖 ────────────────────────
 function renderCauseChart() {
-    if (!dashboardData) return;
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData || !TrafficSaaS.state.causeChart) return;
 
     const raw    = dashboardData.cause_data;
     const causes = [...new Set(raw.map(d => d['肇因']))].reverse();
@@ -246,7 +296,7 @@ function renderCauseChart() {
         itemStyle: { color: COLOR[g] },
     }));
 
-    causeChart.setOption({
+    TrafficSaaS.state.causeChart.setOption({
         tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
         legend: { data: ['男', '女'] },
         grid: { left: '2%', right: '5%', bottom: '3%', top: '40px', containLabel: true },
@@ -254,12 +304,13 @@ function renderCauseChart() {
         yAxis: { type: 'category', data: causes, axisLabel: { fontSize: 11 } },
         series,
     });
-    causeChart.resize();
+    TrafficSaaS.state.causeChart.resize();
 }
 
 // ── 月份趨勢折線圖 ────────────────────────────
 function renderTrendChart() {
-    if (!dashboardData) return;
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData || !TrafficSaaS.state.trendChart) return;
 
     const raw      = dashboardData.monthly_trend;
     const months   = [1,2,3,4,5,6,7,8,9,10,11,12];
@@ -271,51 +322,65 @@ function renderTrendChart() {
         smooth: true,
         connectNulls: false,
         data: months.map(m => {
-            const item = raw.find(d => d['月份'] === m && d['性別'] === g);
+            const item = raw.find(d => Number(d['月份']) === m && d['性別'] === g);
             return item ? item['件數'] : null;
         }),
         itemStyle: { color: COLOR[g] },
         markPoint: g === '男' ? {
-            data: incomplete.map(m => ({
-                coord: [`${m}月`, raw.find(d => d['月份'] === m && d['性別'] === '男')?.['件數'] ?? 0],
-                symbol: 'pin', symbolSize: 28,
-                itemStyle: { color: '#f59e0b' },
-                label: { show: false },
-            })),
+            data: incomplete.map(m => {
+                // ✅ 修復：提取 markPoint 值，確保資料一致性
+                const markItem = raw.find(d => Number(d['月份']) === m && d['性別'] === '男');
+                const markValue = markItem?.['件數'] ?? 0;
+                return {
+                    coord: [`${m}月`, markValue],
+                    symbol: 'pin',
+                    symbolSize: 28,
+                    itemStyle: { color: '#f59e0b' },
+                    label: { show: false },
+                };
+            }),
         } : {},
     }));
 
-    trendChart.setOption({
+    TrafficSaaS.state.trendChart.setOption({
         tooltip: { trigger: 'axis' },
         legend: { data: ['男', '女'] },
         xAxis: { type: 'category', data: months.map(m => `${m}月`) },
         yAxis: { type: 'value', name: '件數' },
         series,
     });
-    trendChart.resize();
+    TrafficSaaS.state.trendChart.resize();
 }
 
 // ── 動態篩選圖表 ──────────────────────────────
 /**
  * 依月份 + 性別篩選肇因資料並重繪。
+ * ✅ 修復：
+ *  1. 月份資料類型轉換（Number 比對）
+ *  2. ratio 邏輯優化（0 值保護）
  * 正式版：改為 fetch(`${API_BASE_URL}/query?month=...&gender=...`,
  *              { headers: { Authorization: `Bearer ${token}` } })
  */
 function renderDynamicChart(monthFilter = '', genderFilter = '') {
-    if (!dashboardData) return;
+    const dashboardData = TrafficSaaS.state.dashboardData;
+    if (!dashboardData || !TrafficSaaS.state.dynamicChart) return;
 
     let raw = [...dashboardData.cause_data];
 
-    // 月份篩選（比對 monthly_trend 中出現的月份件數）
+    // ✅ 月份篩選（修復：資料類型轉換）
     // 注意：cause_data 不含月份欄位，這裡用 monthly_trend 的件數比例模擬動態效果
     if (monthFilter) {
-        const monthNum = parseFloat(monthFilter);
+        const monthNum = Number(monthFilter);
         const totalByMonth = dashboardData.monthly_trend
-            .filter(d => d['月份'] === monthNum)
+            .filter(d => Number(d['月份']) === monthNum)
             .reduce((acc, d) => acc + d['件數'], 0);
         const totalAll = dashboardData.monthly_trend
             .reduce((acc, d) => acc + d['件數'], 0);
-        const ratio = totalAll > 0 ? totalByMonth / totalAll : 1;
+
+        // ✅ 修復：ratio 邏輯優化（0 值保護）
+        const ratio = (totalAll > 0 && totalByMonth > 0)
+            ? totalByMonth / totalAll
+            : 1;
 
         // 以比例縮放件數，模擬月份篩選後的數量
         raw = raw.map(d => ({ ...d, '件數': Math.round(d['件數'] * ratio) }));
@@ -344,7 +409,7 @@ function renderDynamicChart(monthFilter = '', genderFilter = '') {
         itemStyle: { color: COLOR[g] },
     }));
 
-    dynamicChart.setOption({
+    TrafficSaaS.state.dynamicChart.setOption({
         tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
         legend: { data: genders },
         grid: { left: '2%', right: '5%', bottom: '3%', top: '40px', containLabel: true },
@@ -352,24 +417,29 @@ function renderDynamicChart(monthFilter = '', genderFilter = '') {
         yAxis: { type: 'category', data: causes, axisLabel: { fontSize: 11 } },
         series,
     });
-    dynamicChart.resize();
+    TrafficSaaS.state.dynamicChart.resize();
 
     // 顯示篩選結果提示
     const resultEl  = document.getElementById('dynamic-result');
-    const monthText  = monthFilter  ? `${monthFilter} 月` : '全部月份';
-    const genderText = genderFilter ? genderFilter + '性' : '全部性別';
-    const total      = filtered.reduce((acc, d) => acc + d['件數'], 0);
-    resultEl.textContent = `篩選條件：${monthText} × ${genderText}｜顯示件數合計：${total.toLocaleString()} 件`;
-    resultEl.style.display = 'block';
+    if (resultEl) {
+        const monthText  = monthFilter  ? `${monthFilter} 月` : '全部月份';
+        const genderText = genderFilter ? genderFilter + '性' : '全部性別';
+        const total      = filtered.reduce((acc, d) => acc + d['件數'], 0);
+        resultEl.textContent = `篩選條件：${monthText} × ${genderText}｜顯示件數合計：${total.toLocaleString()} 件`;
+        resultEl.style.display = 'block';
+    }
 }
 
 // ══════════════════════════════════════════════
 // 訂閱推播
 // ══════════════════════════════════════════════
 async function handleSubscribe() {
-    const email  = document.getElementById('sub-email').value.trim();
-    const result = document.getElementById('sub-result');
-    const btn    = document.getElementById('sub-btn');
+    const emailInput = document.getElementById('sub-email');
+    const btn = document.getElementById('sub-btn');
+
+    if (!emailInput || !btn) return;
+
+    const email = emailInput.value.trim();
 
     if (!email || !email.includes('@')) {
         showSubResult('error', '⚠️ 請輸入有效的 Email 地址');
@@ -397,7 +467,7 @@ async function handleSubscribe() {
         showSubResult('success',
             `✅ 訂閱請求已送出！請前往 ${email} 信箱，點擊 AWS SNS 確認信中的連結完成訂閱。`
         );
-        document.getElementById('sub-email').value = '';
+        emailInput.value = '';
     } catch {
         showSubResult('error', '❌ 訂閱失敗，請稍後再試或聯絡管理員。');
     } finally {
@@ -408,6 +478,8 @@ async function handleSubscribe() {
 
 function showSubResult(type, msg) {
     const el = document.getElementById('sub-result');
+    if (!el) return;
+
     el.className    = `sub-result ${type}`;
     el.textContent  = msg;
     el.style.display = 'block';
@@ -418,38 +490,45 @@ function showSubResult(type, msg) {
 // 事件綁定
 // ══════════════════════════════════════════════
 function bindEvents() {
-    document.getElementById('login-btn').addEventListener('click', openLoginModal);
-    document.getElementById('cancel-login-btn').addEventListener('click', closeLoginModal);
-    document.getElementById('logout-btn').addEventListener('click', doLogout);
-    document.getElementById('do-login-btn').addEventListener('click', doLogin);
-    document.getElementById('sub-btn').addEventListener('click', handleSubscribe);
+    // ✅ 修復：加入可選鏈操作符（?.）防禦 null 錯誤
+    document.getElementById('login-btn')?.addEventListener('click', openLoginModal);
+    document.getElementById('cancel-login-btn')?.addEventListener('click', closeLoginModal);
+    document.getElementById('logout-btn')?.addEventListener('click', doLogout);
+    document.getElementById('do-login-btn')?.addEventListener('click', doLogin);
+    document.getElementById('sub-btn')?.addEventListener('click', handleSubscribe);
 
     // Enter 鍵觸發登入
     ['login-email', 'login-password'].forEach(id => {
-        document.getElementById(id).addEventListener('keydown', e => {
+        document.getElementById(id)?.addEventListener('keydown', e => {
             if (e.key === 'Enter') doLogin();
         });
     });
 
     // 點擊遮罩背景關閉 Modal
-    document.getElementById('login-modal').addEventListener('click', e => {
+    const loginModal = document.getElementById('login-modal');
+    loginModal?.addEventListener('click', e => {
         if (e.target === e.currentTarget) closeLoginModal();
     });
 
     // 動態查詢按鈕
-    document.getElementById('query-btn').addEventListener('click', () => {
-        const month  = document.getElementById('filter-month').value;
-        const gender = document.getElementById('filter-gender').value;
-        const btn    = document.getElementById('query-btn');
+    const queryBtn = document.getElementById('query-btn');
+    queryBtn?.addEventListener('click', () => {
+        const monthSelect = document.getElementById('filter-month');
+        const genderSelect = document.getElementById('filter-gender');
 
-        btn.disabled    = true;
-        btn.textContent = '⚡ 運算中...';
+        if (!monthSelect || !genderSelect || !queryBtn) return;
+
+        const month  = monthSelect.value;
+        const gender = genderSelect.value;
+
+        queryBtn.disabled    = true;
+        queryBtn.textContent = '⚡ 運算中...';
 
         // 模擬非同步 API 延遲（正式版替換為 fetch API Gateway）
         setTimeout(() => {
             renderDynamicChart(month, gender);
-            btn.disabled    = false;
-            btn.textContent = '⚡ 執行動態查詢';
+            queryBtn.disabled    = false;
+            queryBtn.textContent = '⚡ 執行動態查詢';
         }, 400);
     });
 }
@@ -462,6 +541,7 @@ function setText(id, value) {
     if (el) el.textContent = value ?? '--';
 }
 
+// 暴露全域函數（供 HTML 內嵌事件使用）
 window.openLoginModal = openLoginModal;
 window.closeLoginModal = closeLoginModal;
 window.doLogin = doLogin;
