@@ -1,218 +1,160 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台灣交通事故 SaaS 分析平台</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.common.min.js"></script>
+    <title>交通資料分析 SaaS 儀表板</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+    <header class="navbar">
+        <div class="navbar-brand">交通資料分析 SaaS 儀表板</div>
+        <div class="navbar-auth">
+            <span id="user-status" class="user-badge guest">訪客模式</span>
+            <button id="login-btn" class="btn btn-primary" type="button">登入會員</button>
+            <button id="logout-btn" class="btn btn-danger" type="button" hidden>登出</button>
+        </div>
+    </header>
 
-<!-- ── 導覽列 ────────────────────────────────── -->
-<header class="navbar">
-    <div class="navbar-brand">🚦 台灣交通事故 SaaS 分析平台</div>
-    <div class="navbar-auth">
-        <span id="user-status" class="user-badge guest">🔴 訪客模式</span>
-        <button id="login-btn" class="btn btn-primary">會員登入</button>
-        <button id="logout-btn" class="btn btn-danger" style="display:none;">登出</button>
+    <div id="login-modal" class="modal-backdrop" hidden>
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <h2 id="modal-title">會員登入</h2>
+            <p class="modal-hint">Demo 帳號可使用 <code>demo@example.com</code>，密碼任意輸入。</p>
+            <div id="login-error" class="login-error" role="alert" hidden></div>
+            <label for="login-email">Email</label>
+            <input id="login-email" type="email" class="input-control" autocomplete="email" placeholder="demo@example.com">
+            <label for="login-password">密碼</label>
+            <input id="login-password" type="password" class="input-control" autocomplete="current-password" placeholder="請輸入密碼">
+            <div class="modal-actions">
+                <button id="do-login-btn" class="btn btn-primary" type="button">登入</button>
+                <button id="cancel-login-btn" class="btn btn-ghost" type="button">取消</button>
+            </div>
+            <p class="modal-footer-note">正式環境建議接 AWS Cognito Hosted UI 或其他 OAuth 2.0 登入流程。</p>
+        </div>
     </div>
-</header>
 
-<!-- ── 登入 Modal ────────────────────────────── -->
-<div id="login-modal" class="modal-backdrop" style="display:none;">
-    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <h2 id="modal-title">🔐 會員登入</h2>
-        <p class="modal-hint">Demo 帳號：<code>demo@example.com</code> / 任意密碼</p>
-        <div id="login-error" class="login-error" style="display:none;"></div>
-        <label>Email
-            <input id="login-email" type="email" class="input-control" placeholder="輸入 Email">
-        </label>
-        <label>密碼
-            <input id="login-password" type="password" class="input-control" placeholder="輸入密碼">
-        </label>
-        <div class="modal-actions">
-            <button id="do-login-btn" class="btn btn-primary">登入</button>
-            <button id="cancel-login-btn" class="btn btn-ghost">取消</button>
-        </div>
-        <p class="modal-footer-note">
-            實際部署時此處串接 
-            <a href="https://aws.amazon.com/cognito/" target="_blank" rel="noopener">AWS Cognito Hosted UI</a>
-            進行 OAuth 2.0 認證
-        </p>
-    </div>
-</div>
+    <main>
+        <section class="section-public">
+            <div class="section-label public-label">公開資料</div>
+            <div class="error-banner" id="error-banner" role="alert" hidden></div>
+            <div id="loader" class="loader" hidden>資料載入中...</div>
 
-<main>
-    <!-- ── 公開區：靜態總覽 ──────────────────── -->
-    <section class="section-public">
-        <div class="section-label public-label">🌐 公開資料 — 無需登入</div>
-
-        <div class="error-banner" id="error-banner" role="alert" style="display:none;"></div>
-
-        <div class="stats-row" id="stats-row">
-            <div class="stat-card">
-                <div class="stat-label">分析樣本總數</div>
-                <div class="stat-value" id="total-samples">--</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">男性平均年齡</div>
-                <div class="stat-value" id="male-age">--</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">女性平均年齡</div>
-                <div class="stat-value" id="female-age">--</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">統計顯著性</div>
-                <div class="stat-value sig" id="sig-level">--</div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <h2>🗺️ 全台事故空間熱力分佈</h2>
-                <span class="badge-public">公開</span>
-            </div>
-            <iframe src="./heatmap.html"
-                    title="全台交通事故空間熱力圖"
-                    width="100%" height="480"
-                    style="border:none; border-radius:8px;">
-            </iframe>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <h2>📊 進階靜態分析報告</h2>
-                <span class="badge-public">公開</span>
-            </div>
-            <div class="btn-grid">
-                <a class="nav-btn" href="./age_distribution.html" target="_blank"
-                   aria-label="肇事主因者年齡風險分布（於新視窗開啟）">🎻 年齡風險分布</a>
-                <a class="nav-btn" href="./heatmap_age_month.html" target="_blank"
-                   aria-label="年齡組與月份事故件數熱圖（於新視窗開啟）">🗓 年齡與月份熱圖</a>
-                <a class="nav-btn" href="./pipeline_stats.html" target="_blank"
-                   aria-label="ETL 管線效能報告（於新視窗開啟）">🔧 管線效能報告</a>
-                <a class="nav-btn" href="./stats_table.html" target="_blank"
-                   aria-label="Welch T-Test 統計摘要（於新視窗開啟）">📋 T-Test 統計摘要</a>
-            </div>
-        </div>
-    </section>
-
-    <!-- ── 會員專屬區（預設上鎖）────────────── -->
-    <section id="premium-section" class="section-premium locked">
-
-        <!-- 鎖定遮罩（登入後隱藏）-->
-        <div id="lock-overlay" class="lock-overlay" role="status">
-            <div class="lock-box">
-                <div class="lock-icon">🔒</div>
-                <h3>會員專屬功能</h3>
-                <p>登入後可使用動態篩選查詢與每日資料推播訂閱</p>
-                <button class="btn btn-primary btn-lg" onclick="openLoginModal()">立即登入解鎖</button>
-            </div>
-        </div>
-
-        <!-- 實際內容（未登入時模糊不可點）-->
-        <div class="premium-content">
-            <div class="section-label premium-label">⭐ 會員專屬 — 動態查詢</div>
-
-            <!-- 動態篩選圖表 -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>🔍 動態肇因查詢</h2>
-                    <span class="badge-premium">會員</span>
+            <div class="stats-row" id="stats-row">
+                <div class="stat-card">
+                    <div class="stat-label">樣本總數</div>
+                    <div class="stat-value" id="total-samples">--</div>
                 </div>
-                <p class="card-desc">
-                    依月份、性別即時篩選，資料從 
-                    <code>dashboard_data.json</code> 動態運算
-                    （正式版串接 AWS API Gateway + Lambda）
-                </p>
-                <div class="filter-row">
-                    <div class="filter-group">
-                        <label for="filter-month">月份</label>
-                        <select id="filter-month" class="input-control">
-                            <option value="">全部月份</option>
-                        </select>
+                <div class="stat-card">
+                    <div class="stat-label">男性平均年齡</div>
+                    <div class="stat-value" id="male-age">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">女性平均年齡</div>
+                    <div class="stat-value" id="female-age">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">統計顯著性</div>
+                    <div class="stat-value sig" id="sig-level">--</div>
+                </div>
+            </div>
+
+            <section class="card">
+                <div class="card-header">
+                    <h2>事故熱區地圖</h2>
+                    <span class="badge-public">公開</span>
+                </div>
+                <iframe src="./heatmap.html" title="交通事故熱區地圖" width="100%" height="480"></iframe>
+            </section>
+
+            <section class="card">
+                <div class="card-header">
+                    <h2>公開分析頁面</h2>
+                    <span class="badge-public">公開</span>
+                </div>
+                <div class="btn-grid">
+                    <a class="nav-btn" href="./age_distribution.html" target="_blank" rel="noopener">年齡分布</a>
+                    <a class="nav-btn" href="./heatmap_age_month.html" target="_blank" rel="noopener">年齡與月份熱區</a>
+                    <a class="nav-btn" href="./pipeline_stats.html" target="_blank" rel="noopener">ETL 統計</a>
+                    <a class="nav-btn" href="./stats_table.html" target="_blank" rel="noopener">T-Test 統計表</a>
+                </div>
+            </section>
+        </section>
+
+        <section id="premium-section" class="section-premium locked">
+            <div id="lock-overlay" class="lock-overlay" role="status">
+                <div class="lock-box">
+                    <div class="lock-icon" aria-hidden="true">LOCK</div>
+                    <h3>會員分析已鎖定</h3>
+                    <p>登入後可以使用月份、性別篩選與進階圖表。</p>
+                    <button id="overlay-login-btn" class="btn btn-primary btn-lg" type="button">登入查看</button>
+                </div>
+            </div>
+
+            <div class="premium-content">
+                <div class="section-label premium-label">會員功能</div>
+
+                <section class="card">
+                    <div class="card-header">
+                        <h2>動態條件查詢</h2>
+                        <span class="badge-premium">會員</span>
                     </div>
-                    <div class="filter-group">
-                        <label for="filter-gender">性別</label>
-                        <select id="filter-gender" class="input-control">
-                            <option value="">全部性別</option>
-                            <option value="男">男性</option>
-                            <option value="女">女性</option>
-                        </select>
+                    <p class="card-desc">依月份與性別篩選 <code>dashboard_data.json</code> 的事故原因資料。</p>
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label for="filter-month">月份</label>
+                            <select id="filter-month" class="input-control">
+                                <option value="">全部月份</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="filter-gender">性別</label>
+                            <select id="filter-gender" class="input-control">
+                                <option value="">全部性別</option>
+                            </select>
+                        </div>
+                        <button id="query-btn" class="btn btn-secondary" type="button">套用篩選</button>
                     </div>
-                    <button id="query-btn" class="btn btn-secondary">
-                        ⚡ 執行動態查詢
-                    </button>
-                </div>
-                <div id="dynamic-result" class="result-hint" style="display:none;"></div>
-                <div id="dynamic-chart"
-                     style="width:100%; height:420px; margin-top:1rem;"
-                     role="img"
-                     aria-label="動態篩選肇因分析圖表">
-                </div>
+                    <div id="dynamic-result" class="result-hint" hidden></div>
+                    <div id="dynamic-chart" class="chart" role="img" aria-label="動態篩選後的事故原因圖表"></div>
+                </section>
+
+                <section class="card">
+                    <div class="card-header">
+                        <h2>月份趨勢</h2>
+                        <span id="monthly-warning" class="badge-warning" hidden></span>
+                    </div>
+                    <div id="trend-chart" class="chart chart-sm" role="img" aria-label="月份事故數趨勢圖"></div>
+                </section>
+
+                <section class="card">
+                    <div class="card-header">
+                        <h2>事故原因 TOP 15</h2>
+                        <span class="badge-premium">會員</span>
+                    </div>
+                    <div id="cause-chart" class="chart chart-lg" role="img" aria-label="事故原因 TOP 15 圖表"></div>
+                </section>
+
+                <section class="card subscribe-card">
+                    <div class="card-header">
+                        <h2>訂閱資料更新通知</h2>
+                        <span class="badge-premium">會員</span>
+                    </div>
+                    <p class="card-desc">Demo 模式會在畫面顯示訂閱成功；正式環境可串接 AWS SNS 或 Email 服務。</p>
+                    <div class="sub-row">
+                        <input type="email" id="sub-email" class="input-control input-wide" placeholder="user@example.com" aria-label="訂閱 Email">
+                        <button id="sub-btn" class="btn btn-success" type="button">訂閱通知</button>
+                    </div>
+                    <div id="sub-result" class="sub-result" role="status" hidden></div>
+                </section>
             </div>
+        </section>
 
-            <!-- 月份趨勢（動態版）-->
-            <div class="card">
-                <div class="card-header">
-                    <h2>📈 月份趨勢動態圖</h2>
-                    <span id="monthly-warning" class="badge-warning" style="display:none;"></span>
-                </div>
-                <div id="trend-chart"
-                     style="width:100%; height:380px;"
-                     role="img"
-                     aria-label="月份肇事件數趨勢圖">
-                </div>
-            </div>
+        <footer class="site-footer">
+            <p>資料來源：公開交通資料與 ETL 分析結果。最後更新：<span id="update-time">--</span></p>
+        </footer>
+    </main>
 
-            <!-- 主要肇因圖 -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>📊 肇事原因 TOP 15</h2>
-                    <span class="badge-premium">會員</span>
-                </div>
-                <div id="cause-chart"
-                     style="width:100%; height:500px;"
-                     role="img"
-                     aria-label="主要肇事原因 TOP 15 分性別長條圖">
-                </div>
-            </div>
-
-            <!-- 訂閱推播 -->
-            <div class="card subscribe-card">
-                <div class="card-header">
-                    <h2>📧 訂閱每日資料更新推播</h2>
-                    <span class="badge-premium">會員</span>
-                </div>
-                <p class="card-desc">
-                    每日 ETL 執行完畢後，系統透過 
-                    <strong>AWS SNS → Email</strong> 推播最新統計摘要
-                </p>
-                <div class="sub-row">
-                    <input type="email" id="sub-email" class="input-control input-wide"
-                           placeholder="輸入 Email 地址（如 user@example.com）"
-                           aria-label="訂閱 Email">
-                    <button id="sub-btn" class="btn btn-success">訂閱推播</button>
-                </div>
-                <div id="sub-result" class="sub-result" style="display:none;"></div>
-                <p class="sub-note">
-                    訂閱後將收到 AWS 確認信，點擊連結即完成訂閱。
-                    可隨時回信 UNSUBSCRIBE 取消。
-                </p>
-            </div>
-        </div>
-    </section>
-
-    <footer class="site-footer">
-        <p>資料來源：內政部警政署 A1/A2 交通事故開放資料 ·
-           最後更新：<span id="update-time">載入中</span> ·
-           git SHA：<span id="git-sha">--</span>
-        </p>
-    </footer>
-</main>
-
-<script src="./app.js"></script>
+    <script src="./app.js"></script>
 </body>
 </html>
