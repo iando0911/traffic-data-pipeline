@@ -43,6 +43,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import re
+import cloudscraper
 
 warnings.filterwarnings("ignore")
 
@@ -98,21 +99,18 @@ GIT_SHA = get_git_sha()
 print(f"ℹ️  Git SHA: {GIT_SHA}  |  Run: {RUN_TIMESTAMP}")
 
 # ── [v2.2] 建立帶重試機制的 requests Session ──────────────
-def make_session() -> requests.Session:
+def make_session():
     """
-    建立帶有自動重試的 HTTP Session。
+    建立帶有真實瀏覽器指紋的 Session，用來騙過政府 WAF
     """
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=2,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["GET"],
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
     )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+    return scraper
 
 # ═══════════════════════════════════════════════════════
 # 工具函數
