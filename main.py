@@ -186,21 +186,22 @@ def fetch_latest_accident_urls() -> list[str]:
             seen.add(u)
             unique_urls.append(u)
 
-    # 策略三：終極 Fallback，如果前兩招都失敗，回傳你原本手動找到的靜態連結，
-    # 至少讓這次的 ETL 能用 1 到 4 月的舊資料跑完，不至於 Crash 亮紅燈。
+    # 策略三：終極 Fallback
     if not unique_urls:
-        print("      ⚠️ 所有動態爬蟲路由皆失效，啟用策略 3：載入靜態歷史連結庫")
+        print("      ⚠️ 所有動態爬蟲路由皆失效 (可能遭政府 WAF 阻擋 GitHub IP)，啟用策略 3：載入靜態歷史連結庫")
         unique_urls = [
+            # A1 死亡車禍 (全年累積)
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/DB4AFF40-757C-42F0-844F-1BCFE0D171C4/download",
+            # A2 受傷車禍 (1-4月)
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E1AD1AC7-12C0-4DAF-942B-A8AF882A4746/download",
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/79165BC4-09EA-41D7-A1B0-C4355D9B4A31/download",
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/00E3617E-C3B2-4B0E-AC93-5A6F1B531B04/download",
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/E76E38F3-D046-4E87-B759-97B746AA5B1B/download",
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/8B93B29A-644E-49C1-8056-19681D361E43/download",
+            # ✨ 剛剛手動獲取的 5 月最新 A2 資料
+            "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/6A63F59F-2D81-45E0-A59E-253DB0609DFF/download"
         ]
-
-    return unique_urls
-
+      
 def safe_read_csv(source, label="檔案") -> pd.DataFrame | None:
     for enc in ["utf-8", "cp950", "big5"]:
         try:
