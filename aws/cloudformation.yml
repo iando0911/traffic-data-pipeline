@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-Traffic Data Pipeline SaaS Dashboard cloud infrastructure.
-This template creates a private S3 bucket, CloudFront distribution,
-Origin Access Control, and bucket policy for secure static hosting.
+台灣交通事故資料分析 SaaS 平台雲端基礎設施。
+本 CloudFormation 範本會建立私有 S3 Bucket、CloudFront CDN、
+Origin Access Control（OAC）與 S3 Bucket Policy，
+用於部署 GitHub Actions / Docker ETL 產生的靜態 Dashboard。
 
 Metadata:
 Project:
@@ -11,18 +12,24 @@ Name: Traffic Data Pipeline SaaS
 CourseTopic: Docker, AWS, GitHub Actions CI/CD, SaaS Dashboard
 Repository: iando0911/traffic-data-pipeline
 
+# ─────────────────────────────────────────────
+
+# 可自訂參數
+
+# ─────────────────────────────────────────────
+
 Parameters:
 ProjectName:
 Type: String
 Default: traffic-dashboard
-Description: Resource name prefix. Used for S3 bucket and CloudFront resource naming.
+Description: 資源名稱前綴，會影響 S3 Bucket、CloudFront 註解與 Export 名稱。
 AllowedPattern: "^[a-z0-9-]+$"
-ConstraintDescription: ProjectName must contain only lowercase letters, numbers, and hyphens.
+ConstraintDescription: ProjectName 只能包含小寫英文字母、數字與連字號。
 
 PriceClass:
 Type: String
 Default: PriceClass_200
-Description: CloudFront price class. PriceClass_200 includes Asia Pacific edge locations.
+Description: CloudFront 價格級別。PriceClass_200 包含亞太節點，較適合台灣使用者。
 AllowedValues:
 - PriceClass_100
 - PriceClass_200
@@ -31,7 +38,7 @@ AllowedValues:
 EnableVersioning:
 Type: String
 Default: "true"
-Description: Enable S3 bucket versioning for rollback support.
+Description: 是否啟用 S3 版本控制，方便部署錯誤時回滾。
 AllowedValues:
 - "true"
 - "false"
@@ -41,16 +48,52 @@ Type: Number
 Default: 30
 MinValue: 1
 MaxValue: 365
-Description: Number of days to retain noncurrent S3 object versions.
+Description: S3 舊版本物件保留天數，超過後自動刪除以節省儲存費用。
+
+# ─────────────────────────────────────────────
+
+# 條件設定
+
+# ─────────────────────────────────────────────
 
 Conditions:
 ShouldEnableVersioning: !Equals [!Ref EnableVersioning, "true"]
+
+# ─────────────────────────────────────────────
+
+# AWS 資源定義
+
+# ─────────────────────────────────────────────
 
 Resources:
 
 # ────────────────────────────────────────────
 
-# 1. Private S3 Bucket for static dashboard files
+# 1. 私有 S3 Bucket
+
+#
+
+# 用途：
+
+# - 儲存 GitHub Actions 產生的 output/ 靜態檔案
+
+# - 包含 index.html、app.js、style.css、dashboard_data.json、heatmap.html
+
+#
+
+# 安全設計：
+
+# - 不開放公開存取
+
+# - 不使用 public ACL
+
+# - 只允許 CloudFront 透過 OAC 讀取
+
+#
+
+# 注意：
+
+# - DeletionPolicy: Retain 可避免刪除 Stack 時誤刪 Bucket 與資料
 
 # ────────────────────────────────────────────
 
@@ -62,22 +105,26 @@ Properties:
 BucketName: !Sub "${ProjectName}-${AWS::AccountId}-${AWS::Region}"
 
 ```
+  # 強制由 Bucket 擁有物件，停用 ACL，符合現代 S3 安全建議
   OwnershipControls:
     Rules:
       - ObjectOwnership: BucketOwnerEnforced
 
+  # 封鎖所有公開存取，避免使用者繞過 CloudFront 直接讀取 S3
   PublicAccessBlockConfiguration:
     BlockPublicAcls: true
     BlockPublicPolicy: true
     IgnorePublicAcls: true
     RestrictPublicBuckets: true
 
+  # 啟用版本控制，讓部署錯誤時可以回復舊版本
   VersioningConfiguration:
     Status: !If
       - ShouldEnableVersioning
       - Enabled
       - Suspended
 
+  # 自動刪除舊版本物件，避免長期累積造成不必要費用
   LifecycleConfiguration:
     Rules:
       - Id: DeleteOldNoncurrentVersions
@@ -96,9 +143,17 @@ BucketName: !Sub "${ProjectName}-${AWS::AccountId}-${AWS::Region}"
 
 # ────────────────────────────────────────────
 
-# 2. CloudFront Origin Access Control
+# 2. CloudFront Origin Access Control（OAC）
 
-# Allows CloudFront to access private S3 origin using signed requests.
+#
+
+# 用途：
+
+# - 讓 CloudFront 以 signed requests 存取私有 S3 Bucket
+
+# - 取代舊式 Origin Access Identity（OAI）
+
+# - 避免 S3 Bucket 需要公開
 
 # ────────────────────────────────────────────
 
@@ -107,7 +162,7 @@ Type: AWS::CloudFront::OriginAccessControl
 Properties:
 OriginAccessControlConfig:
 Name: !Sub "${ProjectName}-s3-oac"
-Description: !Sub "OAC for ${ProjectName} private S3 origin"
+Description: !Sub "${ProjectName} 私有 S3 Origin 的 CloudFront OAC"
 OriginAccessControlOriginType: s3
 SigningBehavior: always
 SigningProtocol: sigv4
@@ -116,6 +171,28 @@ SigningProtocol: sigv4
 
 # 3. CloudFront Distribution
 
+#
+
+# 用途：
+
+# - 作為 SaaS Dashboard 的正式 HTTPS 入口
+
+# - 提供 CDN 快取與全球邊緣節點加速
+
+# - 對使用者強制 HTTPS
+
+#
+
+# 說明：
+
+# - DefaultRootObject 設為 index.html
+
+# - 使用 AWS Managed Cache Policy: CachingOptimized
+
+# - 使用 AWS Managed Response Headers Policy: SecurityHeadersPolicy
+
+# - 403 / 404 導回 index.html，讓前端路由或靜態站展示更穩定
+
 # ────────────────────────────────────────────
 
 DashboardDistribution:
@@ -123,38 +200,52 @@ Type: AWS::CloudFront::Distribution
 Properties:
 DistributionConfig:
 Enabled: true
-Comment: !Sub "${ProjectName} Traffic Data Pipeline SaaS Dashboard"
+Comment: !Sub "${ProjectName} 台灣交通事故資料分析 SaaS Dashboard"
 DefaultRootObject: index.html
 PriceClass: !Ref PriceClass
 HttpVersion: http2and3
 IPV6Enabled: true
 
 ```
+    # CloudFront 的來源設定：指向私有 S3 Bucket
     Origins:
       - Id: DashboardS3Origin
         DomainName: !GetAtt DashboardBucket.RegionalDomainName
         OriginAccessControlId: !GetAtt DashboardOriginAccessControl.Id
         S3OriginConfig:
+          # 使用 OAC 時，OriginAccessIdentity 必須留空
           OriginAccessIdentity: ""
 
+    # 預設快取行為
     DefaultCacheBehavior:
       TargetOriginId: DashboardS3Origin
+
+      # 使用者若用 HTTP 連線，會自動轉成 HTTPS
       ViewerProtocolPolicy: redirect-to-https
+
+      # 靜態網站只需要 GET / HEAD / OPTIONS
       AllowedMethods:
         - GET
         - HEAD
         - OPTIONS
+
       CachedMethods:
         - GET
         - HEAD
+
+      # 啟用 gzip / brotli 壓縮，加快 JS / CSS / HTML 傳輸
       Compress: true
 
-      # AWS managed policy: CachingOptimized
+      # AWS Managed Cache Policy: CachingOptimized
+      # 適合靜態網站資源快取
       CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
 
-      # AWS managed policy: SecurityHeadersPolicy
+      # AWS Managed Response Headers Policy: SecurityHeadersPolicy
+      # 自動加入常見安全標頭
       ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
 
+    # 讓 403 / 404 都回到 index.html
+    # 對靜態 Dashboard 或 SPA 類型前端比較友善
     CustomErrorResponses:
       - ErrorCode: 403
         ResponseCode: 200
@@ -165,6 +256,8 @@ IPV6Enabled: true
         ResponsePagePath: /index.html
         ErrorCachingMinTTL: 0
 
+    # 使用 CloudFront 預設憑證
+    # 若未來要綁定自訂網域，可改用 ACM 憑證與 Aliases
     ViewerCertificate:
       CloudFrontDefaultCertificate: true
       MinimumProtocolVersion: TLSv1
@@ -182,7 +275,21 @@ IPV6Enabled: true
 
 # 4. S3 Bucket Policy
 
-# Only this CloudFront distribution can read objects from the bucket.
+#
+
+# 用途：
+
+# - 允許 CloudFront service principal 讀取 S3 物件
+
+# - 使用 AWS:SourceArn 限制只有本 Distribution 可以讀取
+
+#
+
+# 效果：
+
+# - 使用者不能直接公開存取 S3
+
+# - 使用者必須透過 CloudFront URL 存取 Dashboard
 
 # ────────────────────────────────────────────
 
@@ -204,39 +311,55 @@ Condition:
 StringEquals:
 AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}"
 
+# ─────────────────────────────────────────────
+
+# 輸出值
+
+#
+
+# 這些值部署完成後要填入 GitHub Repository Secrets：
+
+# - S3_BUCKET_NAME
+
+# - CLOUDFRONT_DIST_ID
+
+# - CLOUDFRONT_DOMAIN
+
+# ─────────────────────────────────────────────
+
 Outputs:
 S3BucketName:
-Description: S3 bucket name. Add this value to GitHub Secret S3_BUCKET_NAME.
+Description: S3 Bucket 名稱。請填入 GitHub Secret：S3_BUCKET_NAME。
 Value: !Ref DashboardBucket
 Export:
 Name: !Sub "${ProjectName}-S3BucketName"
 
 S3BucketRegionalDomainName:
-Description: Regional domain name of the private S3 bucket.
+Description: 私有 S3 Bucket 的 Regional Domain Name，供 CloudFront Origin 使用。
 Value: !GetAtt DashboardBucket.RegionalDomainName
 Export:
 Name: !Sub "${ProjectName}-S3BucketRegionalDomainName"
 
 CloudFrontDistributionId:
-Description: CloudFront Distribution ID. Add this value to GitHub Secret CLOUDFRONT_DIST_ID.
+Description: CloudFront Distribution ID。請填入 GitHub Secret：CLOUDFRONT_DIST_ID。
 Value: !Ref DashboardDistribution
 Export:
 Name: !Sub "${ProjectName}-CloudFrontDistributionId"
 
 CloudFrontDomain:
-Description: CloudFront domain name. Add this value to GitHub Secret CLOUDFRONT_DOMAIN.
+Description: CloudFront 網域名稱。請填入 GitHub Secret：CLOUDFRONT_DOMAIN。
 Value: !GetAtt DashboardDistribution.DomainName
 Export:
 Name: !Sub "${ProjectName}-CloudFrontDomain"
 
 CloudFrontURL:
-Description: Public HTTPS URL for the SaaS dashboard.
+Description: SaaS Dashboard 公開 HTTPS 網址。
 Value: !Sub "https://${DashboardDistribution.DomainName}"
 Export:
 Name: !Sub "${ProjectName}-CloudFrontURL"
 
 OriginAccessControlId:
-Description: CloudFront Origin Access Control ID.
+Description: CloudFront Origin Access Control ID。
 Value: !GetAtt DashboardOriginAccessControl.Id
 Export:
 Name: !Sub "${ProjectName}-OriginAccessControlId"
