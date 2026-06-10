@@ -198,7 +198,7 @@ const store = new ReactiveState({
 });
 
 const FIELD_CANDIDATES = {
-    cause: ["事故原因", "原因", "cause", "Cause", "category", "name"],
+    cause: ["肇因", "事故原因", "原因", "肇因研判子類別名稱-主要", "cause", "Cause", "category", "name"],
     gender: ["性別", "gender", "Gender", "sex", "Sex"],
     count: ["數量", "件數", "人數", "事故數", "count", "Count", "value", "Value"],
     month: ["月份", "月", "month", "Month"],
