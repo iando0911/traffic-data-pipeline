@@ -1,10 +1,12 @@
 """
-台灣交通事故大數據分析管線 v2.5.2 (完整修復版)
+台灣交通事故大數據分析管線 v2.6.0 (本地資料庫升級版)
 修正項目：
   1. 修正 __main__ 執行順序，確保 run_pipeline() 產出後才執行 sync_to_s3()
   2. 刪除 fetch_latest_accident_urls 中重複損壞的邏輯，保留完整的 12 個靜態網址 Fallback
   3. 全面替換 requests/cloudscraper 為 curl_cffi，完美繞過政府 WAF 阻擋
   4. 完整保留原作者的 Plotly 排版、註解與所有視覺化邏輯
+  5. [v2.6] 新增「本地資料夾匯入」：自動讀取 data/ 目錄下的 ZIP/CSV，突破 WAF 終極方案
+  6. [v2.6] 新增「智慧去重機制」：避免本地完整檔案與線上舊版檔案重複計算
 """
 
 import pandas as pd
@@ -277,11 +279,41 @@ def run_pipeline():
     print("\n[Step 1.5] 開始下載內政部 A1/A2 車禍資料...")
     session = make_session()
     dfs = []
+    
+    # 🌟 [v2.6] 掃描本地 data 目錄，自動匯入使用者提供的檔案
+    local_dir = Path("data")
+    if local_dir.exists():
+        print(f"   📂 發現本地目錄 '{local_dir}'，優先讀取本地檔案...")
+        for file_path in local_dir.rglob("*"):
+            if file_path.suffix.lower() == ".csv":
+                fname = file_path.name.lower()
+                # 排除無用的 metadata
+                if "schema" in fname or fname in ["file.csv", "manifest.csv"]:
+                    continue
+                df = safe_read_csv(file_path, label=file_path.name)
+                if df is not None:
+                    dfs.append(df)
+                    print(f"      ✅ 成功讀取本地 CSV: {file_path.name}")
+            elif file_path.suffix.lower() == ".zip":
+                try:
+                    with zipfile.ZipFile(file_path) as z:
+                        csv_files = [n for n in z.namelist() if n.lower().endswith(".csv")]
+                        for fname in csv_files:
+                            fname_lower = fname.lower()
+                            if "schema" in fname_lower or fname_lower in ["file.csv", "manifest.csv"]:
+                                continue
+                            df = safe_read_csv(z.read(fname), label=f"{file_path.name} -> {fname}")
+                            if df is not None:
+                                dfs.append(df)
+                                print(f"      ✅ 成功讀取本地 ZIP 內檔案: {fname}")
+                except Exception as e:
+                    print(f"      ⚠️ 無法讀取 ZIP {file_path.name}: {e}")
+
     download_success_count = 0
 
     for i, url in enumerate(CONFIG["accident_urls"], 1):
         cache_file = CONFIG["raw_cache_dir"] / f"raw_{i}.pkl"
-        print(f"   [{i}/{len(CONFIG['accident_urls'])}] 下載中...")
+        print(f"   [{i}/{len(CONFIG['accident_urls'])}] 線上下載中...")
         try:
             resp = session.get(url, headers=HEADERS, timeout=60)
             if resp.status_code != 200:
@@ -291,9 +323,12 @@ def run_pipeline():
 
             if content[:4] == b"PK\x03\x04":
                 with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    # [v2.5 更新] 避開 schema.csv 以防污染主資料表
-                    csv_files = [n for n in z.namelist() if n.lower().endswith(".csv") and "schema" not in n.lower()]
+                    # [v2.5/2.6 更新] 避開 schema.csv, manifest.csv, file.csv 以防污染主資料表
+                    csv_files = [n for n in z.namelist() if n.lower().endswith(".csv")]
                     for fname in csv_files:
+                        fname_lower = fname.lower()
+                        if "schema" in fname_lower or fname_lower in ["file.csv", "manifest.csv"]:
+                            continue
                         df = safe_read_csv(z.read(fname), label=fname)
                         if df is not None:
                             dfs.append(df)
@@ -316,11 +351,11 @@ def run_pipeline():
                     print(f"      ❌ 快取讀取失敗：{ce}")
 
     if not dfs:
-        print("\n⚠️ 警告：無法取得任何資料（線上 + 快取均失敗），請檢查網路或 API 端點。")
+        print("\n⚠️ 警告：無法取得任何資料（線上 + 本地 + 快取均失敗），請檢查網路或 API 端點。")
         raise SystemExit(1)
 
     if download_success_count < len(CONFIG["accident_urls"]):
-        print(f"\n⚠️  注意：{len(CONFIG['accident_urls']) - download_success_count} 個資料來源使用快取，資料可能非最新版本")
+        print(f"\n⚠️  注意：{len(CONFIG['accident_urls']) - download_success_count} 個線上來源失敗，資料可能非最新版本")
 
     df_acc = pd.concat(dfs, ignore_index=True)
     print(f"\n✅ 原始資料合併完成：共 {len(df_acc):,} 筆")
@@ -355,6 +390,14 @@ def run_pipeline():
     else:
         print("   ⚠️  未找到當事者順位欄位，使用全部資料")
         df_clean = df_acc.copy()
+
+    # 🌟 [v2.6] 智慧去重機制：避免本地完整檔案與下載舊檔案產生重複計數
+    dedup_cols = [c for c in ["發生年度", "發生月份", "發生日期", "發生時間", "發生地點", "肇因研判大類別名稱-主要"] if c in df_clean.columns]
+    if dedup_cols:
+        before_drop = len(df_clean)
+        df_clean = df_clean.drop_duplicates(subset=dedup_cols)
+        if before_drop > len(df_clean):
+            print(f"   ⚠️ 去重啟動：成功移除 {before_drop - len(df_clean):,} 筆因新舊檔案重疊的重複資料")
 
     n_first_party = len(df_clean)
     print(f"   第一當事者純化後：{n_first_party:,} 筆（{n_first_party / n_raw * 100:.1f}% of raw）")
@@ -415,11 +458,11 @@ def run_pipeline():
         | ~df_clean["lat"].between(*CONFIG["coord_bounds"]["lat"])
         | ~df_clean["lon"].between(*CONFIG["coord_bounds"]["lon"])
     )
-    coord_missing_rate = coord_invalid_mask.sum() / n_first_party * 100
+    coord_missing_rate = coord_invalid_mask.sum() / max(n_first_party, 1) * 100
 
     age_invalid_mask = df_clean["Age"].isna() | ~df_clean["Age"].between(*CONFIG["age_bounds"])
     gender_invalid_mask = ~df_clean["性別"].isin(["男", "女"])
-    age_gender_missing_rate = (age_invalid_mask | gender_invalid_mask).sum() / n_first_party * 100
+    age_gender_missing_rate = (age_invalid_mask | gender_invalid_mask).sum() / max(n_first_party, 1) * 100
 
     print(f"   座標缺失／超範圍率：{coord_missing_rate:.1f}%  ({coord_invalid_mask.sum():,} 筆)")
     print(f"   年齡／性別缺值率：{age_gender_missing_rate:.1f}%  ({(age_invalid_mask | gender_invalid_mask).sum():,} 筆)")
@@ -847,7 +890,7 @@ def run_pipeline():
         print(f"   ⚠️  web/ 目錄不存在，略過靜態文件複製（部署後網站將缺少前端頁面）")
 
     print("\n" + "=" * 60)
-    print("🚀 管線 v2.5.2 執行完畢！")
+    print("🚀 管線 v2.6.0 執行完畢！")
     print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
     print(f"   Git SHA：{GIT_SHA}")
     if incomplete_months:
