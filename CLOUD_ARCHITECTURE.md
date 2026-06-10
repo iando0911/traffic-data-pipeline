@@ -1,8 +1,15 @@
-# 台灣交通事故分析報告 — 雲端部署架構說明
+# 台灣交通事故資料分析 SaaS 平台 — 雲端部署架構說明
 
-## 新增雲端技術棧
+本專題以 Docker、AWS、GitHub Actions CI/CD 與 SaaS Dashboard 為核心，建立一個可自動化執行 ETL、產生交通事故分析結果、並部署到雲端的資料服務平台。
 
-本次補充在原有 GitHub Actions 基礎上，增加了兩層雲端技術：
+系統分為四層：
+
+1. Docker ETL Layer：封裝 Python 資料處理與視覺化流程。
+2. GitHub Actions CI/CD Layer：自動測試、建置 Docker image、執行 ETL、部署網站。
+3. AWS Hosting Layer：使用 S3 儲存靜態 Dashboard，並透過 CloudFront CDN 對外提供 HTTPS 網站。
+4. SaaS Frontend Layer：提供會員登入、動態篩選、訂閱通知、通知中心、活動紀錄與 API Health Check 等互動服務。
+
+本專題同時保留 GitHub Pages 作為備援展示環境，確保即使 AWS 尚未完整設定，也能展示 SaaS Dashboard 與資料分析結果。
 
 ---
 
