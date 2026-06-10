@@ -653,7 +653,11 @@ def run_pipeline():
     if len(df_clean) > 0:
 
         # ── 肇因分析 ─────────────────────────────────────────
-        cause_df = df_clean.groupby(["肇因", "性別"]).size().reset_index(name="件數")
+        cause_df = (
+            df_clean.groupby(["月份", "性別", "肇因"])
+            .size()
+            .reset_index(name="件數")
+        )
         top15_causes = cause_df.groupby("肇因")["件數"].sum().nlargest(15).index.tolist()
         cause_df = cause_df[cause_df["肇因"].isin(top15_causes)]
         cause_order = cause_df.groupby("肇因")["件數"].sum().sort_values().index.tolist()
