@@ -1,128 +1,242 @@
 AWSTemplateFormatVersion: "2010-09-09"
+
 Description: >
-  台灣交通事故分析儀表板
-  資源：S3 Bucket（靜態網站） + CloudFront CDN
-  一次部署，永久使用。
+Traffic Data Pipeline SaaS Dashboard cloud infrastructure.
+This template creates a private S3 bucket, CloudFront distribution,
+Origin Access Control, and bucket policy for secure static hosting.
 
-# ── 可自訂參數 ──────────────────────────────────
+Metadata:
+Project:
+Name: Traffic Data Pipeline SaaS
+CourseTopic: Docker, AWS, GitHub Actions CI/CD, SaaS Dashboard
+Repository: iando0911/traffic-data-pipeline
+
 Parameters:
-  ProjectName:
-    Type: String
-    Default: traffic-dashboard
-    Description: 資源名稱前綴，影響 S3 Bucket 名稱
-  PriceClass:
-    Type: String
-    Default: PriceClass_200        # 美洲 + 歐洲 + 亞太（含台灣）
-    AllowedValues:
-      - PriceClass_100             # 只有美洲 + 歐洲（最便宜）
-      - PriceClass_200             # 加亞太（台灣使用者體驗更好）
-      - PriceClass_All             # 全球（最貴）
+ProjectName:
+Type: String
+Default: traffic-dashboard
+Description: Resource name prefix. Used for S3 bucket and CloudFront resource naming.
+AllowedPattern: "^[a-z0-9-]+$"
+ConstraintDescription: ProjectName must contain only lowercase letters, numbers, and hyphens.
 
-# ── 資源定義 ─────────────────────────────────────
+PriceClass:
+Type: String
+Default: PriceClass_200
+Description: CloudFront price class. PriceClass_200 includes Asia Pacific edge locations.
+AllowedValues:
+- PriceClass_100
+- PriceClass_200
+- PriceClass_All
+
+EnableVersioning:
+Type: String
+Default: "true"
+Description: Enable S3 bucket versioning for rollback support.
+AllowedValues:
+- "true"
+- "false"
+
+NoncurrentVersionExpirationDays:
+Type: Number
+Default: 30
+MinValue: 1
+MaxValue: 365
+Description: Number of days to retain noncurrent S3 object versions.
+
+Conditions:
+ShouldEnableVersioning: !Equals [!Ref EnableVersioning, "true"]
+
 Resources:
 
-  # ── 1. S3 Bucket（不開放公開存取，透過 CloudFront OAC 存取）
-  DashboardBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${ProjectName}-${AWS::AccountId}"
-      # 封鎖所有公開存取
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      VersioningConfiguration:
-        Status: Enabled            # 保留版本，方便回滾
-      LifecycleConfiguration:
-        Rules:
-          - Id: DeleteOldVersions
-            Status: Enabled
-            NoncurrentVersionExpiration:
-              NoncurrentDays: 30   # 30 天後刪除舊版本，節省儲存費用
+# ────────────────────────────────────────────
 
-  # ── 2. Origin Access Control（OAC）：讓 CloudFront 安全讀取 S3
-  OriginAccessControl:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub "${ProjectName}-oac"
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
+# 1. Private S3 Bucket for static dashboard files
 
-  # ── 3. S3 Bucket Policy：只允許 CloudFront 讀取
-  BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref DashboardBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowCloudFrontServicePrincipal
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: s3:GetObject
-            Resource: !Sub "arn:aws:s3:::${DashboardBucket}/*"
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+# ────────────────────────────────────────────
 
-  # ── 4. CloudFront Distribution
-  CloudFrontDistribution:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Enabled: true
-        Comment: !Sub "${ProjectName} Dashboard CDN"
-        DefaultRootObject: index.html
-        PriceClass: !Ref PriceClass
-        HttpVersion: http2and3      # 支援 HTTP/3 (QUIC)，更快
+DashboardBucket:
+Type: AWS::S3::Bucket
+DeletionPolicy: Retain
+UpdateReplacePolicy: Retain
+Properties:
+BucketName: !Sub "${ProjectName}-${AWS::AccountId}-${AWS::Region}"
 
-        # 來源：S3 Bucket
-        Origins:
-          - Id: S3Origin
-            DomainName: !GetAtt DashboardBucket.RegionalDomainName
-            OriginAccessControlId: !GetAtt OriginAccessControl.Id
-            S3OriginConfig:
-              OriginAccessIdentity: ""   # OAC 模式下留空
+```
+  OwnershipControls:
+    Rules:
+      - ObjectOwnership: BucketOwnerEnforced
 
-        # 預設快取行為
-        DefaultCacheBehavior:
-          TargetOriginId: S3Origin
-          ViewerProtocolPolicy: redirect-to-https   # 強制 HTTPS
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
-          # HTML 不快取（每次取最新），其他靜態資源快取 1 小時
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # SecurityHeaders
+  PublicAccessBlockConfiguration:
+    BlockPublicAcls: true
+    BlockPublicPolicy: true
+    IgnorePublicAcls: true
+    RestrictPublicBuckets: true
 
-        # SPA 404 → index.html（若為 Single Page App 需要）
-        CustomErrorResponses:
-          - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 0
-          - ErrorCode: 404
-            ResponseCode: 200
-            ResponsePagePath: /index.html
-            ErrorCachingMinTTL: 0
+  VersioningConfiguration:
+    Status: !If
+      - ShouldEnableVersioning
+      - Enabled
+      - Suspended
 
-# ── 輸出（部署完成後顯示）──────────────────────────
+  LifecycleConfiguration:
+    Rules:
+      - Id: DeleteOldNoncurrentVersions
+        Status: Enabled
+        NoncurrentVersionExpiration:
+          NoncurrentDays: !Ref NoncurrentVersionExpirationDays
+
+  Tags:
+    - Key: Project
+      Value: !Ref ProjectName
+    - Key: ManagedBy
+      Value: CloudFormation
+    - Key: Application
+      Value: TrafficDataPipelineSaaS
+```
+
+# ────────────────────────────────────────────
+
+# 2. CloudFront Origin Access Control
+
+# Allows CloudFront to access private S3 origin using signed requests.
+
+# ────────────────────────────────────────────
+
+DashboardOriginAccessControl:
+Type: AWS::CloudFront::OriginAccessControl
+Properties:
+OriginAccessControlConfig:
+Name: !Sub "${ProjectName}-s3-oac"
+Description: !Sub "OAC for ${ProjectName} private S3 origin"
+OriginAccessControlOriginType: s3
+SigningBehavior: always
+SigningProtocol: sigv4
+
+# ────────────────────────────────────────────
+
+# 3. CloudFront Distribution
+
+# ────────────────────────────────────────────
+
+DashboardDistribution:
+Type: AWS::CloudFront::Distribution
+Properties:
+DistributionConfig:
+Enabled: true
+Comment: !Sub "${ProjectName} Traffic Data Pipeline SaaS Dashboard"
+DefaultRootObject: index.html
+PriceClass: !Ref PriceClass
+HttpVersion: http2and3
+IPV6Enabled: true
+
+```
+    Origins:
+      - Id: DashboardS3Origin
+        DomainName: !GetAtt DashboardBucket.RegionalDomainName
+        OriginAccessControlId: !GetAtt DashboardOriginAccessControl.Id
+        S3OriginConfig:
+          OriginAccessIdentity: ""
+
+    DefaultCacheBehavior:
+      TargetOriginId: DashboardS3Origin
+      ViewerProtocolPolicy: redirect-to-https
+      AllowedMethods:
+        - GET
+        - HEAD
+        - OPTIONS
+      CachedMethods:
+        - GET
+        - HEAD
+      Compress: true
+
+      # AWS managed policy: CachingOptimized
+      CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+      # AWS managed policy: SecurityHeadersPolicy
+      ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+
+    CustomErrorResponses:
+      - ErrorCode: 403
+        ResponseCode: 200
+        ResponsePagePath: /index.html
+        ErrorCachingMinTTL: 0
+      - ErrorCode: 404
+        ResponseCode: 200
+        ResponsePagePath: /index.html
+        ErrorCachingMinTTL: 0
+
+    ViewerCertificate:
+      CloudFrontDefaultCertificate: true
+      MinimumProtocolVersion: TLSv1
+
+  Tags:
+    - Key: Project
+      Value: !Ref ProjectName
+    - Key: ManagedBy
+      Value: CloudFormation
+    - Key: Application
+      Value: TrafficDataPipelineSaaS
+```
+
+# ────────────────────────────────────────────
+
+# 4. S3 Bucket Policy
+
+# Only this CloudFront distribution can read objects from the bucket.
+
+# ────────────────────────────────────────────
+
+DashboardBucketPolicy:
+Type: AWS::S3::BucketPolicy
+Properties:
+Bucket: !Ref DashboardBucket
+PolicyDocument:
+Version: "2012-10-17"
+Statement:
+- Sid: AllowCloudFrontServicePrincipalReadOnly
+Effect: Allow
+Principal:
+Service: cloudfront.amazonaws.com
+Action:
+- s3:GetObject
+Resource: !Sub "arn:aws:s3:::${DashboardBucket}/*"
+Condition:
+StringEquals:
+AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}"
+
 Outputs:
-  S3BucketName:
-    Description: "S3 Bucket 名稱（填入 GitHub Secret: S3_BUCKET_NAME）"
-    Value: !Ref DashboardBucket
-    Export:
-      Name: !Sub "${ProjectName}-bucket-name"
+S3BucketName:
+Description: S3 bucket name. Add this value to GitHub Secret S3_BUCKET_NAME.
+Value: !Ref DashboardBucket
+Export:
+Name: !Sub "${ProjectName}-S3BucketName"
 
-  CloudFrontDistributionId:
-    Description: "CloudFront Distribution ID（填入 GitHub Secret: CLOUDFRONT_DIST_ID）"
-    Value: !Ref CloudFrontDistribution
-    Export:
-      Name: !Sub "${ProjectName}-cf-dist-id"
+S3BucketRegionalDomainName:
+Description: Regional domain name of the private S3 bucket.
+Value: !GetAtt DashboardBucket.RegionalDomainName
+Export:
+Name: !Sub "${ProjectName}-S3BucketRegionalDomainName"
 
-  CloudFrontDomain:
-    Description: "儀表板公開網址（填入 GitHub Secret: CLOUDFRONT_DOMAIN）"
-    Value: !GetAtt CloudFrontDistribution.DomainName
-    Export:
-      Name: !Sub "${ProjectName}-cf-domain"
+CloudFrontDistributionId:
+Description: CloudFront Distribution ID. Add this value to GitHub Secret CLOUDFRONT_DIST_ID.
+Value: !Ref DashboardDistribution
+Export:
+Name: !Sub "${ProjectName}-CloudFrontDistributionId"
+
+CloudFrontDomain:
+Description: CloudFront domain name. Add this value to GitHub Secret CLOUDFRONT_DOMAIN.
+Value: !GetAtt DashboardDistribution.DomainName
+Export:
+Name: !Sub "${ProjectName}-CloudFrontDomain"
+
+CloudFrontURL:
+Description: Public HTTPS URL for the SaaS dashboard.
+Value: !Sub "https://${DashboardDistribution.DomainName}"
+Export:
+Name: !Sub "${ProjectName}-CloudFrontURL"
+
+OriginAccessControlId:
+Description: CloudFront Origin Access Control ID.
+Value: !GetAtt DashboardOriginAccessControl.Id
+Export:
+Name: !Sub "${ProjectName}-OriginAccessControlId"
