@@ -28,6 +28,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ────────────────────────────────────────────
+  # Job 1：安全掃描 + 單元測試 + Docker 建置 + 執行 ETL
+  # ────────────────────────────────────────────
   build-and-run:
     name: "🐳 Build Docker & Run ETL"
     runs-on: ubuntu-latest
@@ -38,6 +41,7 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── 🔍 安全漏洞掃描與測試環境 ───────────────────────────────
       - name: 🐍 Set up Python for audit & tests
         uses: actions/setup-python@v5
         with:
@@ -76,6 +80,7 @@ jobs:
           path: pip-audit-report.json
           retention-days: 30
 
+      # ── 🧪 單元測試（有 tests/ 才跑，無則略過）────────────────────
       - name: 🧪 Run unit tests
         run: |
           if [ -d "tests/" ] && [ -n "$(ls -A tests/)" ]; then
@@ -93,6 +98,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      # ── 🐳 Docker 建置：不用 Buildx、不用 cache、不推 registry ──────
       - name: 🐳 Show Docker version
         run: |
           docker version
@@ -106,6 +112,7 @@ jobs:
         run: |
           docker image inspect traffic-etl:ci
 
+      # ── 🚀 執行 ETL（完全在 Docker container 內）────────────────────
       - name: 🚀 Run ETL pipeline in Docker
         run: |
           mkdir -p "${{ github.workspace }}/output"
@@ -117,6 +124,7 @@ jobs:
             -v "${{ github.workspace }}/output:/app/output" \
             traffic-etl:ci
 
+      # ── ✅ 驗證 output/ 包含所有必要前端文件 ───────────────────────
       - name: ✅ Verify output completeness
         run: |
           echo "📂 output/ 目錄內容："
@@ -146,6 +154,7 @@ jobs:
 
           echo "✅ 所有必要文件均存在"
 
+      # ── ✅ 驗證 SaaS 動態功能元素是否存在 ─────────────────────────
       - name: ✅ Verify SaaS dashboard features
         run: |
           echo "🔍 驗證 SaaS 前端功能是否已輸出"
@@ -169,6 +178,7 @@ jobs:
 
           echo "✅ SaaS Dashboard 功能驗證完成"
 
+      # ── ✅ 驗證 AWS / Cloud 專題檔案存在 ───────────────────────────
       - name: ✅ Verify cloud architecture files
         run: |
           echo "🔍 檢查 aws/ 目錄"
@@ -180,6 +190,7 @@ jobs:
             echo "⚠️ aws/ 目錄不存在，若要強調 AWS 架構，建議補上 CloudFormation / Lambda / SNS 文件"
           fi
 
+      # ── 📤 上傳產出物供後續 job 使用 ─────────────────────────────
       - name: 📤 Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
@@ -187,6 +198,10 @@ jobs:
           path: output/
           retention-days: 3
 
+  # ────────────────────────────────────────────
+  # Job 2：部署到 AWS S3 + CloudFront
+  # AWS 憑證只在此 job 取得，完全不進入 Docker container
+  # ────────────────────────────────────────────
   deploy-aws:
     name: "☁️ Deploy to AWS S3 + CloudFront"
     runs-on: ubuntu-latest
@@ -289,6 +304,9 @@ jobs:
           echo "原因：AWS secrets 尚未完整設定。"
           echo "GitHub Pages deployment will still run as backup."
 
+  # ────────────────────────────────────────────
+  # Job 3：部署到 GitHub Pages（備援）
+  # ────────────────────────────────────────────
   deploy-pages:
     name: "📄 Deploy to GitHub Pages"
     runs-on: ubuntu-latest
@@ -298,16 +316,12 @@ jobs:
       contents: read
       pages: write
       id-token: write
-      actions: read
 
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v4
-
       - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
@@ -330,47 +344,29 @@ jobs:
         with:
           path: site-deploy/
 
-     deploy-pages:
-      name: "📄 Deploy to GitHub Pages"
-      runs-on: ubuntu-latest
-      needs: build-and-run
+      - name: 🚀 Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
-      permissions:
-        contents: read
-        pages: write
-        id-token: write
+      - name: 🎉 Print GitHub Pages URL
+        run: |
+          echo "✅ GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
 
-      environment:
-        name: github-pages
-        url: ${{ steps.deployment.outputs.page_url }}
-
-      steps:
-        - name: 📥 Download dashboard artifact
-          uses: actions/download-artifact@v4
-          with:
-          name: dashboard-output
-          path: site-deploy/
-
-        - name: 🔍 Verify Pages files
-          run: |
-            echo "📂 site-deploy/ 內容："
-            ls -lh site-deploy/
-            test -f site-deploy/index.html
-            test -f site-deploy/app.js
-            test -f site-deploy/style.css
-
-        - name: ⚙️ Setup GitHub Pages
-          uses: actions/configure-pages@v4
-
-        - name: 📤 Upload Pages artifact
-          uses: actions/upload-pages-artifact@v3
-          with:
-            path: site-deploy/
-
-        - name: 🚀 Deploy to GitHub Pages
-          id: deployment
-          uses: actions/deploy-pages@v4
-
-        - name: 🎉 Print GitHub Pages URL
-          run: |
-            echo "✅ GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
+      - name: 📌 Deployment summary
+        run: |
+          {
+            echo "## Traffic ETL SaaS Deployment Summary"
+            echo ""
+            echo "- Docker image build: ✅"
+            echo "- ETL pipeline in Docker: ✅"
+            echo "- SaaS dashboard verification: ✅"
+            echo "- GitHub Pages: ✅ ${{ steps.deployment.outputs.page_url }}"
+            echo "- AWS S3 + CloudFront: check deploy-aws job logs"
+            echo ""
+            echo "### Cloud technologies used"
+            echo "- Docker"
+            echo "- GitHub Actions CI/CD"
+            echo "- AWS S3"
+            echo "- AWS CloudFront"
+            echo "- OIDC"
+          } >> "$GITHUB_STEP_SUMMARY"
