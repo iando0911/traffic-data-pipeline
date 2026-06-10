@@ -1,6 +1,8 @@
-# 台灣交通事故自動化分析管線
+# 台灣交通事故資料分析 SaaS 平台
 
-自動從內政部警政署開放資料下載 A1/A2 交通事故資料，執行統計分析與視覺化，並透過 Docker + GitHub Actions 部署至 AWS CloudFront 與 GitHub Pages。
+本專題是一個以 Docker、AWS 與 GitHub Actions 為基礎的交通事故資料分析 SaaS 平台。系統會自動從內政部警政署開放資料下載 A1/A2 交通事故資料，透過 Docker 容器執行 ETL、統計分析與視覺化，並將產出的 Dashboard 部署至 AWS S3 + CloudFront 與 GitHub Pages。
+
+平台前端提供會員登入、動態篩選、訂閱資料更新通知、通知中心、活動紀錄、API Health Check 等 SaaS Dashboard 行為。Demo 模式使用 localStorage 模擬訂閱與通知服務；正式環境可串接 AWS API Gateway、Lambda、SNS、SES 與 Cognito。
 
 ---
 
