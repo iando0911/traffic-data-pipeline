@@ -4,7 +4,7 @@
  * web/app.js
  * Taiwan Traffic Accident SaaS Dashboard
  *
- * v4.0 SaaS Enhancement
+ * v4.1 SaaS Enhancement
  * ------------------------------------------------------------
  * 保留原本功能：
  * - ReactiveState
@@ -14,7 +14,7 @@
  * - Demo member login
  * - Premium locked/unlocked section
  *
- * 新增 SaaS 動態行為：
+ * 新增 / 修正 SaaS 動態行為：
  * - CONFIG Demo / Production Mode
  * - SubscriptionService
  * - NotificationService
@@ -25,6 +25,12 @@
  * - Notification center
  * - Recent activity log
  * - API health / connectivity status
+ *
+ * v4.1 修正：
+ * - Demo baseSubscriberCount 從 128 改為 0
+ * - 修正舊 localStorage subscriptionStatus 殘留 active 的問題
+ * - 無訂閱者時強制顯示 idle / 尚未訂閱
+ * - 訂閱人數 = Demo localStorage 真實訂閱筆數
  *
  * Production mode 預留：
  * - POST /api/subscribe
@@ -103,7 +109,13 @@ const CONFIG = {
         healthDelayMs: 300,
         maxNotifications: 8,
         maxActivities: 10,
-        baseSubscriberCount: 128
+
+        /**
+         * v4.1 修正：
+         * 原本是 128，會造成 Demo 初始畫面看起來像已有 128 位訂閱者。
+         * 改成 0 後，訂閱人數會完全依照 localStorage 中的 Demo 訂閱資料計算。
+         */
+        baseSubscriberCount: 0
     }
 };
 
@@ -791,20 +803,31 @@ const AuthService = {
 // ============================================================
 
 const SubscriptionService = {
+    /**
+     * v4.1 修正：
+     * - 不再直接信任舊的 subscriptionStatus。
+     * - 以 subscribers 陣列作為唯一真實來源。
+     * - 若沒有任何 subscriber，強制回到 idle。
+     */
     load() {
         const subscribers = StorageService.getJson(
             CONFIG.STORAGE_KEYS.subscribers,
             []
         );
 
-        const subscriptionStatus = StorageService.getJson(
-            CONFIG.STORAGE_KEYS.subscriptionStatus,
-            null
-        );
-
         const safeSubscribers = Array.isArray(subscribers)
             ? subscribers
+                .filter((subscriber) => subscriber && subscriber.email)
+                .map((subscriber) => ({
+                    id: subscriber.id || createId("sub"),
+                    email: String(subscriber.email).trim(),
+                    status: subscriber.status || "active",
+                    source: subscriber.source || "demo",
+                    createdAt: subscriber.createdAt || nowISO()
+                }))
             : [];
+
+        const activeSubscriber = safeSubscribers[0] || null;
 
         store.batch((state) => {
             state.subscription.subscribers = safeSubscribers;
@@ -813,27 +836,48 @@ const SubscriptionService = {
             state.subscription.todayDelta =
                 this.countTodaySubscribers(safeSubscribers);
 
-            if (subscriptionStatus) {
-                state.subscription.status = subscriptionStatus.status || "idle";
-                state.subscription.email = subscriptionStatus.email || null;
-                state.subscription.lastSubscribedAt =
-                    subscriptionStatus.lastSubscribedAt || null;
+            if (activeSubscriber) {
+                state.subscription.status = "active";
+                state.subscription.email = activeSubscriber.email;
+                state.subscription.lastSubscribedAt = activeSubscriber.createdAt || null;
+                state.subscription.lastError = null;
+            } else {
+                state.subscription.status = "idle";
+                state.subscription.email = null;
+                state.subscription.lastSubscribedAt = null;
+                state.subscription.lastError = null;
             }
         });
+
+        this.persist();
     },
 
+    /**
+     * v4.1 修正：
+     * - 若沒有 subscribers，subscriptionStatus 也寫成 idle。
+     * - 避免舊資料殘留 active。
+     */
     persist() {
+        const subscribers = [...store.state.subscription.subscribers];
+        const hasSubscribers = subscribers.length > 0;
+
         StorageService.setJson(
             CONFIG.STORAGE_KEYS.subscribers,
-            [...store.state.subscription.subscribers]
+            subscribers
         );
 
         StorageService.setJson(
             CONFIG.STORAGE_KEYS.subscriptionStatus,
             {
-                status: store.state.subscription.status,
-                email: store.state.subscription.email,
-                lastSubscribedAt: store.state.subscription.lastSubscribedAt
+                status: hasSubscribers
+                    ? store.state.subscription.status
+                    : "idle",
+                email: hasSubscribers
+                    ? store.state.subscription.email
+                    : null,
+                lastSubscribedAt: hasSubscribers
+                    ? store.state.subscription.lastSubscribedAt
+                    : null
             }
         );
     },
@@ -875,7 +919,8 @@ const SubscriptionService = {
     async subscribeDemo(email) {
         await sleep(CONFIG.DEMO.subscribeDelayMs);
 
-        const alreadySubscribed = this.hasSubscribed(email);
+        const normalizedEmail = String(email).trim();
+        const alreadySubscribed = this.hasSubscribed(normalizedEmail);
 
         let nextSubscribers = [...store.state.subscription.subscribers];
 
@@ -883,7 +928,7 @@ const SubscriptionService = {
             nextSubscribers = [
                 {
                     id: createId("sub"),
-                    email,
+                    email: normalizedEmail,
                     status: "active",
                     source: "demo",
                     createdAt: nowISO()
@@ -892,38 +937,44 @@ const SubscriptionService = {
             ];
         }
 
+        const activeSubscriber = nextSubscribers.find(
+            (subscriber) =>
+                String(subscriber.email).toLowerCase() === normalizedEmail.toLowerCase()
+        ) || nextSubscribers[0] || null;
+
         store.batch((state) => {
             state.subscription.subscribers = nextSubscribers;
-            state.subscription.status = alreadySubscribed ? "active" : "active";
-            state.subscription.email = email;
+            state.subscription.status = "active";
+            state.subscription.email = normalizedEmail;
             state.subscription.totalSubscribers =
                 CONFIG.DEMO.baseSubscriberCount + nextSubscribers.length;
             state.subscription.todayDelta =
                 this.countTodaySubscribers(nextSubscribers);
-            state.subscription.lastSubscribedAt = nowISO();
+            state.subscription.lastSubscribedAt =
+                activeSubscriber?.createdAt || nowISO();
             state.subscription.lastError = null;
         });
 
         this.persist();
 
         const message = alreadySubscribed
-            ? `${email} 已經在訂閱名單中`
-            : `已建立 Demo 訂閱：${email}`;
+            ? `${normalizedEmail} 已經在 Demo 訂閱名單中`
+            : `Demo 訂閱已建立：${normalizedEmail}`;
 
         ActivityLogService.log("訂閱成功", message);
 
         NotificationService.push({
             type: "success",
-            title: "訂閱成功",
-            message: CONFIG.MODE === "demo"
-                ? `Demo 模式：${email} 已加入資料更新通知`
-                : `已送出訂閱確認信到 ${email}`
+            title: alreadySubscribed ? "已經訂閱過" : "訂閱成功",
+            message: alreadySubscribed
+                ? `${normalizedEmail} 已經在 Demo 訂閱名單中`
+                : `Demo 模式：${normalizedEmail} 已加入資料更新通知`
         });
 
         return {
             ok: true,
             mode: "demo",
-            email,
+            email: normalizedEmail,
             alreadySubscribed,
             status: "active"
         };
@@ -990,10 +1041,14 @@ const SubscriptionService = {
     },
 
     unsubscribeDemo(email) {
+        const normalizedEmail = String(email || "").trim();
+
         const nextSubscribers = store.state.subscription.subscribers.filter(
             (subscriber) =>
-                String(subscriber.email).toLowerCase() !== String(email).toLowerCase()
+                String(subscriber.email).toLowerCase() !== normalizedEmail.toLowerCase()
         );
+
+        const activeSubscriber = nextSubscribers[0] || null;
 
         store.batch((state) => {
             state.subscription.subscribers = nextSubscribers;
@@ -1002,20 +1057,54 @@ const SubscriptionService = {
             state.subscription.todayDelta =
                 this.countTodaySubscribers(nextSubscribers);
 
-            if (state.subscription.email === email) {
+            if (activeSubscriber) {
+                state.subscription.status = "active";
+                state.subscription.email = activeSubscriber.email;
+                state.subscription.lastSubscribedAt = activeSubscriber.createdAt || null;
+            } else {
                 state.subscription.status = "idle";
                 state.subscription.email = null;
+                state.subscription.lastSubscribedAt = null;
             }
+
+            state.subscription.lastError = null;
         });
 
         this.persist();
 
-        ActivityLogService.log("取消訂閱", `已移除 Demo 訂閱：${email}`);
+        ActivityLogService.log("取消訂閱", `已移除 Demo 訂閱：${normalizedEmail}`);
 
         NotificationService.push({
             type: "info",
             title: "取消訂閱",
-            message: `${email} 已從 Demo 訂閱名單移除`
+            message: `${normalizedEmail} 已從 Demo 訂閱名單移除`
+        });
+    },
+
+    /**
+     * Demo 展示用重置方法：
+     * 可在 Console 執行 SubscriptionService.resetDemo()
+     */
+    resetDemo() {
+        StorageService.remove(CONFIG.STORAGE_KEYS.subscribers);
+        StorageService.remove(CONFIG.STORAGE_KEYS.subscriptionStatus);
+
+        store.batch((state) => {
+            state.subscription.status = "idle";
+            state.subscription.email = null;
+            state.subscription.subscribers = [];
+            state.subscription.totalSubscribers = CONFIG.DEMO.baseSubscriberCount;
+            state.subscription.todayDelta = 0;
+            state.subscription.lastSubscribedAt = null;
+            state.subscription.lastError = null;
+        });
+
+        ActivityLogService.log("重置 Demo 訂閱", "已清除 Demo 訂閱資料");
+
+        NotificationService.push({
+            type: "info",
+            title: "訂閱資料已重置",
+            message: "Demo 訂閱狀態已回到尚未訂閱"
         });
     }
 };
