@@ -15,9 +15,9 @@ on:
     branches: [main]
 
 permissions:
-  contents: write        # GitHub Pages 部署需要
+  contents: read
   pages: write
-  id-token: write        # OIDC → AWS 認證（比長效金鑰更安全）
+  id-token: write  # OIDC → AWS 認證（比長效金鑰更安全）
 
 # 同一時間只允許一個部署流程，避免競態
 concurrency:
@@ -26,46 +26,34 @@ concurrency:
 
 jobs:
   # ────────────────────────────────────────────
-  # Job 1：建置 Docker 映像並執行 ETL
+  # Job 1：安全掃描 + 單元測試 + Docker 建置 + 執行 ETL
   # ────────────────────────────────────────────
   build-and-run:
     name: "🐳 Build Docker & Run ETL"
     runs-on: ubuntu-latest
 
-    outputs:
-      artifact-name: dashboard-output
-
     steps:
-    
-      - name: Checkout repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
-          # 完整 history，確保 git rev-parse --short HEAD 可用
-          fetch-depth: 0
+          fetch-depth: 0  # 完整 history，確保 git rev-parse --short HEAD 可用
 
-      # 1. 在這裡增加這一步，換取短效憑證
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: ap-northeast-1
-
-      # ── 🔍 安全漏洞掃描 ──────────────────────────────────
-      - name: Set up Python for audit
+      # ── 🔍 安全漏洞掃描（用 Python 直接跑 pip-audit，不需要 Docker）──
+      - name: Set up Python for audit & tests
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: 📦 Install Python dependencies
+      - name: 📦 Install dependencies（僅供 audit / pytest 使用）
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 🔍 Security audit
+      - name: 🔍 Security audit (pip-audit)
         run: |
           pip install pip-audit
-          # 同時輸出 JSON（供後續 artifact 上傳）與人類可讀格式（顯示於 log）
+          # 同時輸出 JSON（供 artifact 上傳）與人類可讀格式（顯示於 log）
           pip-audit -r requirements.txt --output json \
             --output-file pip-audit-report.json || true
           pip-audit -r requirements.txt || true
@@ -78,15 +66,13 @@ jobs:
           path: pip-audit-report.json
           retention-days: 30
 
-      # ── 🧪 單元測試（有 tests/ 才跑，無則略過）─────────────
+      # ── 🧪 單元測試（有 tests/ 才跑，無則略過）──────────────────────
       - name: 🧪 Run unit tests
         run: |
           if [ -d "tests/" ] && [ -n "$(ls -A tests/)" ]; then
-            # <--- 加入 PYTHONPATH=. 確保 pytest 能夠正確載入專案根目錄的 main.py
             PYTHONPATH=. pytest tests/ -v --tb=short --junitxml=test-results.xml
           else
-            echo "⚠️  tests/ 目錄不存在或為空，略過單元測試"
-            echo "   建議補充測試：tests/test_utils.py（見 README 說明）"
+            echo "⚠️ tests/ 目錄不存在或為空，略過單元測試"
           fi
 
       - name: 📋 Upload test results
@@ -95,11 +81,10 @@ jobs:
         with:
           name: test-results
           path: test-results.xml
-          # 找不到檔案時不報錯（tests/ 不存在時不會產生此檔）
           if-no-files-found: ignore
           retention-days: 30
 
-      # ── Docker 建置快取（加速 CI，不重複 pip install）──────
+      # ── 🐳 Docker 建置（含 layer 快取，避免重複 pip install）──────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -111,13 +96,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      # ── 建置映像（不推送 registry，僅本機使用）────────────
-      - name: Build Docker image
+      - name: 🔨 Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          load: true                     # 載入至本機 docker daemon
+          load: true        # 載入至本機 docker daemon，不推送 registry
           tags: traffic-etl:ci
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
@@ -128,25 +112,20 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      # ── 執行 ETL，將產出物寫到 ./output ──────────────────
-      # main.py v2.4 會自動將 web/ 靜態文件複製到 output/
-      # 2. 修改 Run ETL 的步驟，將憑證注入進去
-      - name: Run ETL pipeline in Docker
+      # ── 🚀 執行 ETL（完全在 Docker container 內，不使用 AWS 憑證）────
+      # ETL 只下載政府開放資料並產生靜態檔案，不需要 AWS 存取
+      - name: 🚀 Run ETL pipeline in Docker
         run: |
           mkdir -p ${{ github.workspace }}/output
-          # 將 runner 的 AWS 環境變數傳進 Docker
           docker run --rm \
             -e TARGET_YEAR=${{ github.event.inputs.target_year || '115' }} \
             -e OUTPUT_DIR=/app/output \
             -e GITHUB_SHA=${{ github.sha }} \
-            -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-            -e AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN \
             -v ${{ github.workspace }}/output:/app/output \
             traffic-etl:ci
 
-      # ── 驗證 output/ 包含必要的前端文件 ──────────────────
-      - name: Verify output completeness
+      # ── ✅ 驗證 output/ 包含所有必要前端文件 ──────────────────────────
+      - name: ✅ Verify output completeness
         run: |
           echo "📂 output/ 目錄內容："
           ls -lh output/
@@ -165,8 +144,8 @@ jobs:
             echo "✅ 所有必要文件均存在"
           fi
 
-      # ── 上傳產出物供後續 job 使用 ──────────────────────────
-      - name: Upload dashboard artifact
+      # ── 📤 上傳產出物供後續 job（deploy-aws / deploy-pages）使用 ─────
+      - name: 📤 Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-output
@@ -178,53 +157,61 @@ jobs:
   # Job 2：部署到 AWS S3 + CloudFront
   # ────────────────────────────────────────────
   deploy-aws:
-    name: "☁️  Deploy to AWS S3 + CloudFront"
+    name: "☁️ Deploy to AWS S3 + CloudFront"
     runs-on: ubuntu-latest
     needs: build-and-run
     environment: production
 
     steps:
-      - name: Download dashboard artifact
+      # 下載 Job 1 產出的靜態檔案（一般 artifact，非 Pages 格式，無 tar 包裝）
+      - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
           name: dashboard-output
-          path: output/
+          path: site-deploy/   # 獨立目錄，避免與其他檔案混淆
 
-      # ── OIDC 免金鑰認證（推薦）────────────────────────────
-      - name: Configure AWS credentials (OIDC)
+      - name: 🔍 Verify downloaded files
+        run: |
+          echo "📂 site-deploy/ 內容："
+          ls -lh site-deploy/
+
+      # ── OIDC 免金鑰認證（AWS 憑證只在此 job 取得，不傳入 Docker）────
+      - name: 🔑 Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: ap-northeast-1     # 東京（台灣最近）
+          aws-region: ap-northeast-1   # 東京（台灣延遲最低）
 
-      # ── 同步至 S3（刪除舊檔、設 Cache-Control）────────────
-      - name: Sync to S3
+      # ── 同步至 S3（刪除舊檔、設 Cache-Control）──────────────────────
+      - name: ☁️ Sync to S3
         run: |
-          aws s3 sync output/ s3://${{ secrets.S3_BUCKET_NAME }}/ \
+          # 同步所有靜態資源（1 小時快取）
+          aws s3 sync site-deploy/ s3://${{ secrets.S3_BUCKET_NAME }}/ \
             --delete \
             --cache-control "max-age=3600, must-revalidate" \
             --metadata-directive REPLACE
 
-          # HTML 不快取，確保使用者每次取最新版
-          aws s3 cp output/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
+          # index.html 單獨覆寫（不快取，確保使用者取到最新版）
+          aws s3 cp site-deploy/index.html \
+            s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache, no-store, must-revalidate" \
             --metadata-directive REPLACE
 
-      # ── 清除 CloudFront 快取，使新版立即生效 ──────────────
-      - name: Invalidate CloudFront cache
+      # ── 清除 CloudFront 快取，使新版立即對外生效 ─────────────────────
+      - name: 🔄 Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DIST_ID }} \
             --paths "/*"
 
-      - name: Print deployment URL
+      - name: 🎉 Print deployment URL
         run: |
           echo "✅ AWS 部署完成"
           echo "🌐 URL: https://${{ secrets.CLOUDFRONT_DOMAIN }}"
 
 
   # ────────────────────────────────────────────
-  # Job 3：同時部署到 GitHub Pages（保留原有管道）
+  # Job 3：部署到 GitHub Pages（備援）
   # ────────────────────────────────────────────
   deploy-pages:
     name: "📄 Deploy to GitHub Pages"
@@ -235,23 +222,26 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Download dashboard artifact
+      # 下載 Job 1 產出的靜態檔案
+      - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
           name: dashboard-output
-          path: output/
+          path: site-deploy/
 
-      - name: Setup GitHub Pages
+      - name: ⚙️ Setup GitHub Pages
         uses: actions/configure-pages@v4
 
-      - name: Upload Pages artifact
+      # upload-pages-artifact 會把 site-deploy/ 打包成 Pages 專用的 artifact.tar
+      # deploy-pages 直接消費這個 artifact，不需要手動解壓縮
+      - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: output/
+          path: site-deploy/
 
-      - name: Deploy to GitHub Pages
+      - name: 🚀 Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Print GitHub Pages URL
+      - name: 🎉 Print GitHub Pages URL
         run: echo "✅ GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
