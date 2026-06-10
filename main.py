@@ -1,10 +1,10 @@
 """
-台灣交通事故大數據分析管線 v2.5.2 (完美修復版)
+台灣交通事故大數據分析管線 v2.5.2 (完整修復版)
 修正項目：
   1. 修正 __main__ 執行順序，確保 run_pipeline() 產出後才執行 sync_to_s3()
-  2. 刪除 fetch_latest_accident_urls 中重複損壞的邏輯，合併完整的 12 個靜態網址
+  2. 刪除 fetch_latest_accident_urls 中重複損壞的邏輯，保留完整的 12 個靜態網址 Fallback
   3. 全面替換 requests/cloudscraper 為 curl_cffi，完美繞過政府 WAF 阻擋
-  4. 完整保留原作者的 Plotly 排版、註解與所有功能邏輯
+  4. 完整保留原作者的 Plotly 排版、註解與所有視覺化邏輯
 """
 
 import pandas as pd
@@ -26,7 +26,7 @@ from datetime import datetime
 import re
 import boto3
 
-# 🌟 替換為 curl_cffi (繞過 WAF 阻擋的關鍵)
+# 🌟 替換原生 requests 與 cloudscraper 為 curl_cffi 以突破 WAF
 from curl_cffi import requests
 
 warnings.filterwarnings("ignore")
@@ -86,7 +86,6 @@ print(f"ℹ️  Git SHA: {GIT_SHA}  |  Run: {RUN_TIMESTAMP}")
 def make_session():
     """
     建立帶有真實瀏覽器指紋的 Session，用來騙過政府 WAF
-    改用 curl_cffi，無需複雜的 Adapter 與 Retry 即可突破
     """
     return requests.Session(impersonate="chrome120")
 
@@ -133,7 +132,7 @@ def fetch_latest_accident_urls() -> list[str]:
     print("      -> 嘗試路由 1：政府資料開放平臺 API")
     try:
         for ds_id in [dataset_ids["A1"], dataset_ids["A2"]]:
-            resp = session.get(f"{api_endpoints[0]}{ds_id}", headers=HEADERS, timeout=15)
+            resp = session.get(f"{api_endpoints[0]}{ds_id}", headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 _collect_urls(resp.json())
     except Exception as e:
@@ -144,7 +143,7 @@ def fetch_latest_accident_urls() -> list[str]:
         print("      -> 嘗試路由 2：警政署後台直連")
         try:
             for ds_uuid in [dataset_ids["A1_alt"], dataset_ids["A2_alt"]]:
-                resp = session.get(f"{api_endpoints[1]}{ds_uuid}", headers=HEADERS, timeout=15)
+                resp = session.get(f"{api_endpoints[1]}{ds_uuid}", headers=HEADERS, timeout=10)
                 if resp.status_code == 200:
                     url_pattern = re.compile(r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download")
                     links = url_pattern.findall(resp.text)
@@ -160,7 +159,7 @@ def fetch_latest_accident_urls() -> list[str]:
             seen.add(u)
             unique_urls.append(u)
 
-    # 策略三：終極 Fallback（已合併所有 12 個網址，並刪除下方殭屍程式碼）
+    # 策略三：終極 Fallback（包含 5 月最新 A2 檔案）
     if not unique_urls:
         print("      ⚠️ 所有動態爬蟲路由皆失效 (可能遭政府 WAF 阻擋 GitHub IP)，啟用策略 3：載入靜態歷史連結庫")
         unique_urls = [
@@ -178,9 +177,9 @@ def fetch_latest_accident_urls() -> list[str]:
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/6A63F59F-2D81-45E0-A59E-253DB0609DFF/download"
         ]
 
-    # 就是這行！正確回傳結果，不會再跑進死胡同！
+    # 就是這行！一定要有它才能把抓到的網址交給主程式！
     return unique_urls
-      
+
 def safe_read_csv(source, label="檔案") -> pd.DataFrame | None:
     for enc in ["utf-8", "cp950", "big5"]:
         try:
@@ -290,7 +289,7 @@ def run_pipeline():
         try:
             resp = session.get(url, headers=HEADERS, timeout=60)
             if resp.status_code != 200:
-                raise Exception(f"HTTP Error: {resp.status_code}")
+                raise Exception(f"HTTP Status {resp.status_code}")
                 
             content = resp.content
 
@@ -852,7 +851,7 @@ def run_pipeline():
         print(f"   ⚠️  web/ 目錄不存在，略過靜態文件複製（部署後網站將缺少前端頁面）")
 
     print("\n" + "=" * 60)
-    print("🚀 管線 v2.5 執行完畢！")
+    print("🚀 管線 v2.5.2 執行完畢！")
     print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
     print(f"   Git SHA：{GIT_SHA}")
     if incomplete_months:
@@ -885,6 +884,6 @@ def sync_to_s3(local_dir="output", bucket_name="traffic-dashboard-743181156800")
 # 確保被引入為模組時不會自動執行，僅在直接執行時觸發 ETL 管線
 # ═══════════════════════════════════════════════════════
 if __name__ == "__main__":
-    # 🌟 修復關鍵：先執行資料產出，再執行 S3 上傳
+    # 🌟 已經修復執行順序：先產出資料，再上傳
     run_pipeline()
     sync_to_s3()
