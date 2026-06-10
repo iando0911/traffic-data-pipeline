@@ -464,18 +464,27 @@ function setupEffects() {
     store.effect(() => UI.setHidden("loader", !store.state.ui.loading), ["ui.loading"]);
     store.effect(() => UI.showError(store.state.ui.error), ["ui.error"]);
     store.effect(() => UI.renderAuth(), ["auth.isLoggedIn", "auth.email"]);
-    store.effect(() => {
-        const dashboard = store.state.data.dashboard;
-        const rows = getCauseData(dashboard);
-        UI.renderStats(dashboard);
-        UI.populateFilters(rows);
-        UI.renderCauseChart(rows);
-        UI.renderTrendChart(rows);
+    store.effect(() => { 
+        const dashboard = store.state.data.dashboard; 
+        const rows = getCauseData(dashboard); 
+        UI.renderStats(dashboard); 
+        UI.populateFilters(rows); 
     }, ["data.dashboard"]);
-    store.effect(() => {
-        const rows = computed.filteredRows.get();
-        UI.renderFilteredResult(rows);
-        UI.renderCauseChart(rows, "dynamic-chart");
+    store.effect(() => { 
+        // 取得當前篩選後的資料 (filteredRows)
+        const rows = computed.filteredRows.get(); 
+    
+        UI.renderFilteredResult(rows); 
+    
+        // 更新上方動態查詢的圖表
+        UI.renderCauseChart(rows, "dynamic-chart"); 
+    
+        // ✅ 新增這行：讓「事故原因 TOP 15」圖表接收篩選後的資料
+        UI.renderCauseChart(rows, "cause-chart"); 
+    
+        // ✅ 新增這行：讓「月份趨勢」圖表也一起響應篩選條件
+        UI.renderTrendChart(rows); 
+    
     }, ["data.dashboard", "filters.current.month", "filters.current.gender"]);
 }
 
