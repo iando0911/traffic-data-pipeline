@@ -416,22 +416,28 @@ const UI = {
         chart.resize();
     },
     renderAuth() {
-        const loggedIn = store.state.auth.isLoggedIn;
-        const badge = document.getElementById("user-status");
-        const loginBtn = document.getElementById("login-btn");
-        const logoutBtn = document.getElementById("logout-btn");
-        const premium = document.getElementById("premium-section");
+            const loggedIn = store.state.auth.isLoggedIn;
+            const badge = document.getElementById("user-status");
+            const loginBtn = document.getElementById("login-btn");
+            const logoutBtn = document.getElementById("logout-btn");
+            const premium = document.getElementById("premium-section");
+            const lockOverlay = document.getElementById("lock-overlay"); // 🌟 新增這行抓取浮水印元素
 
-        if (badge) {
-            badge.textContent = loggedIn ? `會員：${store.state.auth.email}` : "訪客模式";
-            badge.className = `user-badge ${loggedIn ? "member" : "guest"}`;
-        }
-        if (loginBtn) loginBtn.hidden = loggedIn;
-        if (logoutBtn) logoutBtn.hidden = !loggedIn;
-        if (premium) {
-            premium.classList.toggle("locked", !loggedIn);
-            premium.classList.toggle("unlocked", loggedIn);
-        }
+            if (badge) {
+                badge.textContent = loggedIn ? `會員：${store.state.auth.email}` : "訪客模式";
+                badge.className = `user-badge ${loggedIn ? "member" : "guest"}`;
+            }
+            if (loginBtn) loginBtn.hidden = loggedIn;
+            if (logoutBtn) logoutBtn.hidden = !loggedIn;
+        
+            if (premium) {
+                premium.classList.toggle("locked", !loggedIn);
+                premium.classList.toggle("unlocked", loggedIn);
+            }
+
+            if (lockOverlay) {
+                lockOverlay.hidden = loggedIn;
+            }
     },
     renderFilteredResult(rows) {
         const result = document.getElementById("dynamic-result");
