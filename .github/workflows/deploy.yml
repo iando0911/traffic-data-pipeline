@@ -15,7 +15,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: read   # ETL 不需要寫回 repo
   pages: write
   id-token: write  # OIDC → AWS 認證（比長效金鑰更安全）
 
@@ -38,14 +38,14 @@ jobs:
         with:
           fetch-depth: 0  # 完整 history，確保 git rev-parse --short HEAD 可用
 
-      # ── 🔍 安全漏洞掃描（用 Python 直接跑 pip-audit，不需要 Docker）──
+      # ── 🔍 安全漏洞掃描（pip-audit 在 runner 直接跑，不進 Docker）────
       - name: Set up Python for audit & tests
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: 📦 Install dependencies（僅供 audit / pytest 使用）
+      - name: 📦 Install dependencies（僅供 pip-audit / pytest 使用，ETL 由 Docker 執行）
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -53,7 +53,6 @@ jobs:
       - name: 🔍 Security audit (pip-audit)
         run: |
           pip install pip-audit
-          # 同時輸出 JSON（供 artifact 上傳）與人類可讀格式（顯示於 log）
           pip-audit -r requirements.txt --output json \
             --output-file pip-audit-report.json || true
           pip-audit -r requirements.txt || true
@@ -84,7 +83,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # ── 🐳 Docker 建置（含 layer 快取，避免重複 pip install）──────────
+      # ── 🐳 Docker 建置（含 layer 快取，加速 CI）─────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -106,14 +105,13 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
-      # 避免快取無限成長
       - name: Rotate build cache
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      # ── 🚀 執行 ETL（完全在 Docker container 內，不使用 AWS 憑證）────
-      # ETL 只下載政府開放資料並產生靜態檔案，不需要 AWS 存取
+      # ── 🚀 執行 ETL（完全在 Docker container 內）────────────────────
+      # ETL 只下載政府開放資料並產生靜態檔案，不需要也不傳入任何 AWS 憑證
       - name: 🚀 Run ETL pipeline in Docker
         run: |
           mkdir -p ${{ github.workspace }}/output
@@ -155,6 +153,7 @@ jobs:
 
   # ────────────────────────────────────────────
   # Job 2：部署到 AWS S3 + CloudFront
+  # AWS 憑證只在此 job 取得，完全不進入 Docker container
   # ────────────────────────────────────────────
   deploy-aws:
     name: "☁️ Deploy to AWS S3 + CloudFront"
@@ -163,26 +162,26 @@ jobs:
     environment: production
 
     steps:
-      # 下載 Job 1 產出的靜態檔案（一般 artifact，非 Pages 格式，無 tar 包裝）
+      # dashboard-output 是一般 artifact（非 Pages 格式），下載後直接是展開的檔案，無 tar 包裝
       - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
           name: dashboard-output
-          path: site-deploy/   # 獨立目錄，避免與其他檔案混淆
+          path: site-deploy/
 
       - name: 🔍 Verify downloaded files
         run: |
           echo "📂 site-deploy/ 內容："
           ls -lh site-deploy/
 
-      # ── OIDC 免金鑰認證（AWS 憑證只在此 job 取得，不傳入 Docker）────
+      # ── OIDC 免金鑰認證──────────────────────────────────────────────
       - name: 🔑 Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: ap-northeast-1   # 東京（台灣延遲最低）
+          aws-region: ap-northeast-1
 
-      # ── 同步至 S3（刪除舊檔、設 Cache-Control）──────────────────────
+      # ── 同步至 S3──────────────────────────────────────────────────
       - name: ☁️ Sync to S3
         run: |
           # 同步所有靜態資源（1 小時快取）
@@ -191,13 +190,12 @@ jobs:
             --cache-control "max-age=3600, must-revalidate" \
             --metadata-directive REPLACE
 
-          # index.html 單獨覆寫（不快取，確保使用者取到最新版）
+          # index.html 單獨覆寫（不快取，確保使用者每次取最新版）
           aws s3 cp site-deploy/index.html \
             s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache, no-store, must-revalidate" \
             --metadata-directive REPLACE
 
-      # ── 清除 CloudFront 快取，使新版立即對外生效 ─────────────────────
       - name: 🔄 Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
@@ -222,7 +220,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # 下載 Job 1 產出的靜態檔案
       - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
@@ -232,8 +229,8 @@ jobs:
       - name: ⚙️ Setup GitHub Pages
         uses: actions/configure-pages@v4
 
-      # upload-pages-artifact 會把 site-deploy/ 打包成 Pages 專用的 artifact.tar
-      # deploy-pages 直接消費這個 artifact，不需要手動解壓縮
+      # upload-pages-artifact 將 site-deploy/ 打包成 Pages 專用格式
+      # deploy-pages 直接消費，不需要手動解壓縮
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
