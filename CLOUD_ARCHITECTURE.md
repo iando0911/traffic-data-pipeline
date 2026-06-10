@@ -122,7 +122,7 @@ git push / 每日排程
        ▼
 GitHub Actions
   ├─ Job 1: 🐳 Docker Build + ETL Run
-  │    ├─ docker buildx（快取加速）
+  │    ├─ docker build（建置 ETL image）
   │    ├─ docker run（產生 output/）
   │    └─ upload artifact
   │
