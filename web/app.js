@@ -202,7 +202,7 @@ const FIELD_CANDIDATES = {
     gender: ["性別", "gender", "Gender", "sex", "Sex"],
     count: ["數量", "件數", "人數", "事故數", "count", "Count", "value", "Value"],
     month: ["月份", "月", "month", "Month"],
-    total: ["樣本總數", "總樣本數", "total_samples", "total", "Total"],
+    total: ["最終可用樣本數", "樣本總數", "總樣本數", "total_samples", "total", "Total"], // ✅ 加上 "最終可用樣本數"
     maleAge: ["男性平均年齡", "男平均年齡", "male_age", "male_avg_age"],
     femaleAge: ["女性平均年齡", "女平均年齡", "female_age", "female_avg_age"],
     sig: ["統計顯著性", "顯著性", "significance", "p_value"]
