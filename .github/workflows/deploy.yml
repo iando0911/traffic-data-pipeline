@@ -192,37 +192,72 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-run
     environment: production
-    if: >-
-      ${{
-        secrets.AWS_OIDC_ROLE_ARN != '' &&
-        secrets.S3_BUCKET_NAME != '' &&
-        secrets.CLOUDFRONT_DIST_ID != '' &&
-        secrets.CLOUDFRONT_DOMAIN != ''
-      }}
 
     permissions:
       contents: read
       id-token: write
 
     steps:
+      - name: 🔎 Check AWS deployment secrets
+        id: aws-secrets
+        env:
+          AWS_OIDC_ROLE_ARN: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          CLOUDFRONT_DIST_ID: ${{ secrets.CLOUDFRONT_DIST_ID }}
+          CLOUDFRONT_DOMAIN: ${{ secrets.CLOUDFRONT_DOMAIN }}
+        run: |
+          missing=0
+
+          if [ -z "$AWS_OIDC_ROLE_ARN" ]; then
+            echo "⚠️ Missing secret: AWS_OIDC_ROLE_ARN"
+            missing=1
+          fi
+
+          if [ -z "$S3_BUCKET_NAME" ]; then
+            echo "⚠️ Missing secret: S3_BUCKET_NAME"
+            missing=1
+          fi
+
+          if [ -z "$CLOUDFRONT_DIST_ID" ]; then
+            echo "⚠️ Missing secret: CLOUDFRONT_DIST_ID"
+            missing=1
+          fi
+
+          if [ -z "$CLOUDFRONT_DOMAIN" ]; then
+            echo "⚠️ Missing secret: CLOUDFRONT_DOMAIN"
+            missing=1
+          fi
+
+          if [ "$missing" -eq 1 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ AWS secrets are incomplete. Skipping AWS deploy."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "✅ AWS secrets found. AWS deploy enabled."
+          fi
+
       - name: 📥 Download dashboard artifact
+        if: steps.aws-secrets.outputs.enabled == 'true'
         uses: actions/download-artifact@v4
         with:
           name: dashboard-output
           path: site-deploy/
 
       - name: 🔍 Verify downloaded files
+        if: steps.aws-secrets.outputs.enabled == 'true'
         run: |
           echo "📂 site-deploy/ 內容："
           ls -lh site-deploy/
 
       - name: 🔑 Configure AWS credentials (OIDC)
+        if: steps.aws-secrets.outputs.enabled == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: ap-northeast-1
 
       - name: ☁️ Sync to S3
+        if: steps.aws-secrets.outputs.enabled == 'true'
         run: |
           aws s3 sync site-deploy/ s3://${{ secrets.S3_BUCKET_NAME }}/ \
             --delete \
@@ -235,15 +270,24 @@ jobs:
             --metadata-directive REPLACE
 
       - name: 🔄 Invalidate CloudFront cache
+        if: steps.aws-secrets.outputs.enabled == 'true'
         run: |
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DIST_ID }} \
             --paths "/*"
 
-      - name: 🎉 Print deployment URL
+      - name: 🎉 Print AWS deployment URL
+        if: steps.aws-secrets.outputs.enabled == 'true'
         run: |
           echo "✅ AWS 部署完成"
           echo "🌐 URL: https://${{ secrets.CLOUDFRONT_DOMAIN }}"
+
+      - name: ⏭️ Skip AWS deployment message
+        if: steps.aws-secrets.outputs.enabled != 'true'
+        run: |
+          echo "⏭️ AWS deployment skipped."
+          echo "原因：AWS secrets 尚未完整設定。"
+          echo "GitHub Pages deployment will still run as backup."
 
   deploy-pages:
     name: "📄 Deploy to GitHub Pages"
