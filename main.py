@@ -241,6 +241,9 @@ def fetch_latest_accident_urls() -> list[str]:
 
 
     def _collect_urls(obj):
+        
+        if isinstance(obj, dict) and not dynamic_urls:
+          print(f"      [debug] API keys: {list(obj.keys())[:5]}")  # 只印前5個key
 
         if isinstance(obj, dict):
 
