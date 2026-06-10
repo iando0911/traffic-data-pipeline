@@ -4,6 +4,7 @@ on:
   # 每日 UTC 08:00（台灣時間 16:00）自動觸發
   schedule:
     - cron: "0 8 * * *"
+
   # 手動觸發（可傳入年度參數）
   workflow_dispatch:
     inputs:
@@ -11,13 +12,15 @@ on:
         description: "民國年份（例如 115）"
         required: false
         default: "115"
+
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
-  contents: read   # ETL 不需要寫回 repo
+  contents: read
   pages: write
-  id-token: write  # OIDC → AWS 認證（比長效金鑰更安全）
+  id-token: write
 
 # 同一時間只允許一個部署流程，避免競態
 concurrency:
@@ -36,26 +39,38 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 完整 history，確保 git rev-parse --short HEAD 可用
+          fetch-depth: 0
 
-      # ── 🔍 安全漏洞掃描（pip-audit 在 runner 直接跑，不進 Docker）────
-      - name: Set up Python for audit & tests
+      # ── 🔍 安全漏洞掃描與測試環境 ───────────────────────────────
+      - name: 🐍 Set up Python for audit & tests
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: 📦 Install dependencies（僅供 pip-audit / pytest 使用，ETL 由 Docker 執行）
+      - name: 📦 Install dependencies for audit & tests
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ requirements.txt 不存在，略過專案依賴安裝"
+          fi
+
+          pip install pytest pip-audit
 
       - name: 🔍 Security audit (pip-audit)
         run: |
-          pip install pip-audit
-          pip-audit -r requirements.txt --output json \
-            --output-file pip-audit-report.json || true
-          pip-audit -r requirements.txt || true
+          if [ -f "requirements.txt" ]; then
+            pip-audit -r requirements.txt --output json \
+              --output-file pip-audit-report.json || true
+
+            pip-audit -r requirements.txt || true
+          else
+            echo "{}" > pip-audit-report.json
+            echo "⚠️ requirements.txt 不存在，略過 pip-audit"
+          fi
 
       - name: 📋 Upload security audit report
         if: always()
@@ -65,7 +80,7 @@ jobs:
           path: pip-audit-report.json
           retention-days: 30
 
-      # ── 🧪 單元測試（有 tests/ 才跑，無則略過）──────────────────────
+      # ── 🧪 單元測試（有 tests/ 才跑，無則略過）────────────────────
       - name: 🧪 Run unit tests
         run: |
           if [ -d "tests/" ] && [ -n "$(ls -A tests/)" ]; then
@@ -83,63 +98,98 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # ── 🐳 Docker 建置（含 layer 快取，加速 CI）─────────────────────
-      - name: Build Docker image
-        run: docker build -t traffic-etl:local .
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile', 'requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
+      # ── 🐳 Docker 建置：不用 Buildx、不用 cache、不推 registry ──────
+      # 重點：保留 Docker 雲端技術要求，但避免 Docker Hub / Buildx cache 錯誤
+      - name: 🐳 Show Docker version
+        run: |
+          docker version
+          docker info
 
       - name: 🔨 Build Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          load: true        # 載入至本機 docker daemon，不推送 registry
-          tags: traffic-etl:ci
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Rotate build cache
         run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          docker build -t traffic-etl:ci .
+
+      - name: 🔎 Inspect Docker image
+        run: |
+          docker image inspect traffic-etl:ci
 
       # ── 🚀 執行 ETL（完全在 Docker container 內）────────────────────
-      # ETL 只下載政府開放資料並產生靜態檔案，不需要也不傳入任何 AWS 憑證
+      # ETL 只下載政府開放資料並產生靜態檔案，不需要也不傳入 AWS 憑證
       - name: 🚀 Run ETL pipeline in Docker
         run: |
-          mkdir -p ${{ github.workspace }}/output
+          mkdir -p "${{ github.workspace }}/output"
+
           docker run --rm \
             -e TARGET_YEAR=${{ github.event.inputs.target_year || '115' }} \
             -e OUTPUT_DIR=/app/output \
             -e GITHUB_SHA=${{ github.sha }} \
-            -v ${{ github.workspace }}/output:/app/output \
+            -v "${{ github.workspace }}/output:/app/output" \
             traffic-etl:ci
 
-      # ── ✅ 驗證 output/ 包含所有必要前端文件 ──────────────────────────
+      # ── ✅ 驗證 output/ 包含所有必要前端文件 ───────────────────────
       - name: ✅ Verify output completeness
         run: |
           echo "📂 output/ 目錄內容："
           ls -lh output/
           echo ""
-          REQUIRED_FILES=("index.html" "app.js" "style.css" "dashboard_data.json" "heatmap.html")
+
+          REQUIRED_FILES=(
+            "index.html"
+            "app.js"
+            "style.css"
+            "dashboard_data.json"
+            "heatmap.html"
+          )
+
           MISSING=()
+
           for f in "${REQUIRED_FILES[@]}"; do
             if [ ! -f "output/$f" ]; then
               MISSING+=("$f")
             fi
           done
+
           if [ ${#MISSING[@]} -gt 0 ]; then
             echo "❌ 缺少必要文件：${MISSING[*]}"
             exit 1
+          fi
+
+          echo "✅ 所有必要文件均存在"
+
+      # ── ✅ 驗證 SaaS 動態功能元素是否存在 ─────────────────────────
+      - name: ✅ Verify SaaS dashboard features
+        run: |
+          echo "🔍 驗證 SaaS 前端功能是否已輸出"
+
+          grep -q "subscription-status" output/index.html
+          grep -q "subscriber-count" output/index.html
+          grep -q "notification-list" output/index.html
+          grep -q "activity-list" output/index.html
+          grep -q "api-status" output/index.html
+          grep -q "health-check-btn" output/index.html
+
+          grep -q "SubscriptionService" output/app.js
+          grep -q "NotificationService" output/app.js
+          grep -q "ActivityLogService" output/app.js
+          grep -q "CONFIG" output/app.js
+
+          grep -q "saas-overview" output/style.css
+          grep -q "toast-container" output/style.css
+          grep -q "status-pill" output/style.css
+          grep -q "event-list" output/style.css
+
+          echo "✅ SaaS Dashboard 功能驗證完成"
+
+      # ── ✅ 驗證 AWS / Cloud 專題檔案存在 ───────────────────────────
+      - name: ✅ Verify cloud architecture files
+        run: |
+          echo "🔍 檢查 aws/ 目錄"
+
+          if [ -d "aws" ]; then
+            echo "✅ aws/ 目錄存在"
+            find aws -maxdepth 3 -type f | sort
           else
-            echo "✅ 所有必要文件均存在"
+            echo "⚠️ aws/ 目錄不存在，若要強調 AWS 架構，建議補上 CloudFormation / Lambda / SNS 文件"
           fi
 
       # ── 📤 上傳產出物供後續 job（deploy-aws / deploy-pages）使用 ─────
@@ -149,7 +199,6 @@ jobs:
           name: dashboard-output
           path: output/
           retention-days: 3
-
 
   # ────────────────────────────────────────────
   # Job 2：部署到 AWS S3 + CloudFront
@@ -162,7 +211,6 @@ jobs:
     environment: production
 
     steps:
-      # dashboard-output 是一般 artifact（非 Pages 格式），下載後直接是展開的檔案，無 tar 包裝
       - name: 📥 Download dashboard artifact
         uses: actions/download-artifact@v4
         with:
@@ -174,23 +222,21 @@ jobs:
           echo "📂 site-deploy/ 內容："
           ls -lh site-deploy/
 
-      # ── OIDC 免金鑰認證──────────────────────────────────────────────
+      # ── OIDC 免長效金鑰認證 ──────────────────────────────────────
       - name: 🔑 Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: ap-northeast-1
 
-      # ── 同步至 S3──────────────────────────────────────────────────
+      # ── 同步至 S3 ────────────────────────────────────────────────
       - name: ☁️ Sync to S3
         run: |
-          # 同步所有靜態資源（1 小時快取）
           aws s3 sync site-deploy/ s3://${{ secrets.S3_BUCKET_NAME }}/ \
             --delete \
             --cache-control "max-age=3600, must-revalidate" \
             --metadata-directive REPLACE
 
-          # index.html 單獨覆寫（不快取，確保使用者每次取最新版）
           aws s3 cp site-deploy/index.html \
             s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache, no-store, must-revalidate" \
@@ -206,7 +252,6 @@ jobs:
         run: |
           echo "✅ AWS 部署完成"
           echo "🌐 URL: https://${{ secrets.CLOUDFRONT_DOMAIN }}"
-
 
   # ────────────────────────────────────────────
   # Job 3：部署到 GitHub Pages（備援）
@@ -226,11 +271,17 @@ jobs:
           name: dashboard-output
           path: site-deploy/
 
+      - name: 🔍 Verify Pages files
+        run: |
+          echo "📂 site-deploy/ 內容："
+          ls -lh site-deploy/
+          test -f site-deploy/index.html
+          test -f site-deploy/app.js
+          test -f site-deploy/style.css
+
       - name: ⚙️ Setup GitHub Pages
         uses: actions/configure-pages@v4
 
-      # upload-pages-artifact 將 site-deploy/ 打包成 Pages 專用格式
-      # deploy-pages 直接消費，不需要手動解壓縮
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -241,4 +292,5 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: 🎉 Print GitHub Pages URL
-        run: echo "✅ GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
+        run: |
+          echo "✅ GitHub Pages 部署完成：${{ steps.deployment.outputs.page_url }}"
