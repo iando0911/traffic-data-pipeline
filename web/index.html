@@ -4,13 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>交通資料分析 SaaS 儀表板</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer></script>
     <link rel="stylesheet" href="./style.css">
 </head>
 <body>
     <header class="navbar">
         <div class="navbar-brand">交通資料分析 SaaS 儀表板</div>
+
         <div class="navbar-auth">
+            <span id="connectivity-status" class="connectivity online" role="status">Online</span>
             <span id="user-status" class="user-badge guest">訪客模式</span>
             <button id="login-btn" class="btn btn-primary" type="button">登入會員</button>
             <button id="logout-btn" class="btn btn-danger" type="button" hidden>登出</button>
@@ -21,15 +23,32 @@
         <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
             <h2 id="modal-title">會員登入</h2>
             <p class="modal-hint">Demo 帳號可使用 <code>demo@example.com</code>，密碼任意輸入。</p>
+
             <div id="login-error" class="login-error" role="alert" hidden></div>
+
             <label for="login-email">Email</label>
-            <input id="login-email" type="email" class="input-control" autocomplete="email" placeholder="demo@example.com">
+            <input
+                id="login-email"
+                type="email"
+                class="input-control"
+                autocomplete="email"
+                placeholder="demo@example.com"
+            >
+
             <label for="login-password">密碼</label>
-            <input id="login-password" type="password" class="input-control" autocomplete="current-password" placeholder="請輸入密碼">
+            <input
+                id="login-password"
+                type="password"
+                class="input-control"
+                autocomplete="current-password"
+                placeholder="請輸入密碼"
+            >
+
             <div class="modal-actions">
                 <button id="do-login-btn" class="btn btn-primary" type="button">登入</button>
                 <button id="cancel-login-btn" class="btn btn-ghost" type="button">取消</button>
             </div>
+
             <p class="modal-footer-note">正式環境建議接 AWS Cognito Hosted UI 或其他 OAuth 2.0 登入流程。</p>
         </div>
     </div>
@@ -37,22 +56,26 @@
     <main>
         <section class="section-public">
             <div class="section-label public-label">公開資料</div>
+
             <div class="error-banner" id="error-banner" role="alert" hidden></div>
-            <div id="loader" class="loader" hidden>資料載入中...</div>
+            <div id="loader" class="loader" role="status" hidden>資料載入中...</div>
 
             <div class="stats-row" id="stats-row">
                 <div class="stat-card">
                     <div class="stat-label">樣本總數</div>
                     <div class="stat-value" id="total-samples">--</div>
                 </div>
+
                 <div class="stat-card">
                     <div class="stat-label">男性平均年齡</div>
                     <div class="stat-value" id="male-age">--</div>
                 </div>
+
                 <div class="stat-card">
                     <div class="stat-label">女性平均年齡</div>
                     <div class="stat-value" id="female-age">--</div>
                 </div>
+
                 <div class="stat-card">
                     <div class="stat-label">統計顯著性</div>
                     <div class="stat-value sig" id="sig-level">--</div>
@@ -64,7 +87,14 @@
                     <h2>事故熱區地圖</h2>
                     <span class="badge-public">公開</span>
                 </div>
-                <iframe src="./heatmap.html" title="交通事故熱區地圖" width="100%" height="480"></iframe>
+
+                <iframe
+                    src="./heatmap.html"
+                    title="交通事故熱區地圖"
+                    width="100%"
+                    height="480"
+                    loading="lazy"
+                ></iframe>
             </section>
 
             <section class="card">
@@ -72,6 +102,7 @@
                     <h2>公開分析頁面</h2>
                     <span class="badge-public">公開</span>
                 </div>
+
                 <div class="btn-grid">
                     <a class="nav-btn" href="./age_distribution.html" target="_blank" rel="noopener">年齡分布</a>
                     <a class="nav-btn" href="./heatmap_age_month.html" target="_blank" rel="noopener">年齡與月份熱區</a>
@@ -86,7 +117,7 @@
                 <div class="lock-box">
                     <div class="lock-icon" aria-hidden="true">LOCK</div>
                     <h3>會員分析已鎖定</h3>
-                    <p>登入後可以使用月份、性別篩選與進階圖表。</p>
+                    <p>登入後可以使用月份、性別篩選、訂閱通知、系統狀態與進階圖表。</p>
                     <button id="overlay-login-btn" class="btn btn-primary btn-lg" type="button">登入查看</button>
                 </div>
             </div>
@@ -94,12 +125,106 @@
             <div class="premium-content">
                 <div class="section-label premium-label">會員功能</div>
 
+                <section class="saas-overview" aria-label="SaaS 即時服務狀態">
+                    <div class="saas-card">
+                        <div class="saas-card-header">
+                            <span class="saas-icon" aria-hidden="true">MODE</span>
+                            <span class="saas-title">服務模式</span>
+                        </div>
+                        <div class="saas-value" id="app-mode">Demo</div>
+                        <p class="saas-desc">Demo 可用 localStorage 模擬服務；正式環境可串 API Gateway / Lambda。</p>
+                    </div>
+
+                    <div class="saas-card">
+                        <div class="saas-card-header">
+                            <span class="saas-icon" aria-hidden="true">API</span>
+                            <span class="saas-title">API Health</span>
+                        </div>
+                        <div class="saas-value">
+                            <span id="api-status" class="status-pill status-checking">Checking</span>
+                        </div>
+                        <p class="saas-desc">
+                            <span id="api-message">Checking service health...</span>
+                        </p>
+                        <p class="saas-meta">
+                            Last Check：<span id="api-health-time">--</span>
+                        </p>
+                        <button id="health-check-btn" class="btn btn-secondary btn-sm" type="button">重新檢查</button>
+                    </div>
+
+                    <div class="saas-card">
+                        <div class="saas-card-header">
+                            <span class="saas-icon" aria-hidden="true">SUB</span>
+                            <span class="saas-title">訂閱人數</span>
+                        </div>
+                        <div class="saas-value" id="subscriber-count">128</div>
+                        <p class="saas-desc">
+                            <span id="subscriber-delta">今日 +0</span>
+                        </p>
+                        <p class="saas-meta">
+                            狀態：
+                            <span id="subscription-status" class="status-pill status-idle">尚未訂閱</span>
+                        </p>
+                    </div>
+
+                    <div class="saas-card">
+                        <div class="saas-card-header">
+                            <span class="saas-icon" aria-hidden="true">MAIL</span>
+                            <span class="saas-title">目前訂閱信箱</span>
+                        </div>
+                        <div class="saas-value saas-email" id="subscription-email">尚未訂閱</div>
+                        <p class="saas-meta">
+                            Last Subscribe：<span id="subscription-updated-at">--</span>
+                        </p>
+                    </div>
+                </section>
+
+                <section class="dashboard-grid">
+                    <section class="card notification-card" aria-labelledby="notification-title">
+                        <div class="card-header">
+                            <h2 id="notification-title">通知中心</h2>
+                            <span class="badge-premium">
+                                未讀 <span id="notification-count">0</span>
+                            </span>
+                        </div>
+
+                        <p class="card-desc">顯示登入、查詢、訂閱、資料載入與系統健康檢查等 SaaS 事件。</p>
+
+                        <ul id="notification-list" class="event-list" aria-live="polite">
+                            <li class="empty">目前沒有通知</li>
+                        </ul>
+
+                        <div class="card-actions">
+                            <button id="mark-notifications-read-btn" class="btn btn-ghost btn-sm" type="button">全部標記已讀</button>
+                        </div>
+                    </section>
+
+                    <section class="card activity-card" aria-labelledby="activity-title">
+                        <div class="card-header">
+                            <h2 id="activity-title">Recent Activity</h2>
+                            <span class="badge-premium">會員</span>
+                        </div>
+
+                        <p class="card-desc">記錄使用者在 SaaS 平台上的主要操作行為。</p>
+
+                        <ul id="activity-list" class="event-list" aria-live="polite">
+                            <li class="empty">尚無活動紀錄</li>
+                        </ul>
+
+                        <div class="card-actions">
+                            <button id="clear-activity-btn" class="btn btn-ghost btn-sm" type="button">清除活動紀錄</button>
+                        </div>
+                    </section>
+                </section>
+
                 <section class="card">
                     <div class="card-header">
                         <h2>動態條件查詢</h2>
                         <span class="badge-premium">會員</span>
                     </div>
+
                     <p class="card-desc">依月份與性別篩選 <code>dashboard_data.json</code> 的事故原因資料。</p>
+
                     <div class="filter-row">
                         <div class="filter-group">
                             <label for="filter-month">月份</label>
@@ -107,15 +232,18 @@
                                 <option value="">全部月份</option>
                             </select>
                         </div>
+
                         <div class="filter-group">
                             <label for="filter-gender">性別</label>
                             <select id="filter-gender" class="input-control">
                                 <option value="">全部性別</option>
                             </select>
                         </div>
+
                         <button id="query-btn" class="btn btn-secondary" type="button">套用篩選</button>
                     </div>
-                    <div id="dynamic-result" class="result-hint" hidden></div>
+
+                    <div id="dynamic-result" class="result-hint" role="status" hidden></div>
                     <div id="dynamic-chart" class="chart" role="img" aria-label="動態篩選後的事故原因圖表"></div>
                 </section>
 
@@ -124,6 +252,7 @@
                         <h2>月份趨勢</h2>
                         <span id="monthly-warning" class="badge-warning" hidden></span>
                     </div>
+
                     <div id="trend-chart" class="chart chart-sm" role="img" aria-label="月份事故數趨勢圖"></div>
                 </section>
 
@@ -132,6 +261,7 @@
                         <h2>事故原因 TOP 15</h2>
                         <span class="badge-premium">會員</span>
                     </div>
+
                     <div id="cause-chart" class="chart chart-lg" role="img" aria-label="事故原因 TOP 15 圖表"></div>
                 </section>
 
@@ -140,12 +270,29 @@
                         <h2>訂閱資料更新通知</h2>
                         <span class="badge-premium">會員</span>
                     </div>
-                    <p class="card-desc">Demo 模式會在畫面顯示訂閱成功；正式環境可串接 AWS SNS 或 Email 服務。</p>
+
+                    <p class="card-desc">Demo 模式會在畫面顯示訂閱成功並保存於 localStorage；正式環境可串接 AWS SNS、SES、Lambda 或 Email 服務。</p>
+
                     <div class="sub-row">
-                        <input type="email" id="sub-email" class="input-control input-wide" placeholder="user@example.com" aria-label="訂閱 Email">
+                        <input
+                            type="email"
+                            id="sub-email"
+                            class="input-control input-wide"
+                            placeholder="user@example.com"
+                            aria-label="訂閱 Email"
+                            autocomplete="email"
+                        >
                         <button id="sub-btn" class="btn btn-success" type="button">訂閱通知</button>
                     </div>
+
                     <div id="sub-result" class="sub-result" role="status" hidden></div>
+
+                    <div class="subscriber-preview" aria-label="Demo 訂閱名單">
+                        <h3>Demo 訂閱名單</h3>
+                        <ul id="subscriber-list" class="mini-list">
+                            <li class="empty">目前尚無 Demo 訂閱資料</li>
+                        </ul>
+                    </div>
                 </section>
             </div>
         </section>
@@ -155,6 +302,6 @@
         </footer>
     </main>
 
-    <script src="./app.js?v=20260608-1"></script>
+    <script src="./app.js?v=20260610-saas-1" defer></script>
 </body>
 </html>
