@@ -253,7 +253,7 @@ jobs:
 
       - name: 📥 Download dashboard artifact
         if: steps.aws-secrets.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-output
           path: site-deploy/
@@ -323,7 +323,7 @@ jobs:
 
     steps:
       - name: 📥 Download dashboard artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dashboard-output
           path: site-deploy/
