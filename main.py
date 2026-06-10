@@ -1,6 +1,6 @@
 """
 
-台灣交通事故大數據分析管線 v2.6.0 (本地資料庫升級版)
+台灣交通事故大數據分析管線 v2.6.1 (動態爬蟲修正版)
 
 修正項目：
 
@@ -15,6 +15,9 @@
   5. [v2.6] 新增「本地資料夾匯入」：自動讀取 data/ 目錄下的 ZIP/CSV，突破 WAF 終極方案
 
   6. [v2.6] 新增「智慧去重機制」：避免本地完整檔案與線上舊版檔案重複計算
+
+  7. [v2.6.1] 修正 _collect_urls：改以值內容辨識下載連結，不再依賴 key 名稱，
+             解決政府 API 欄位名稱不固定（非 downloadUrl/url）導致路由 1 永遠抓不到 URL 的問題
 
 """
 
@@ -194,7 +197,7 @@ def fetch_latest_accident_urls() -> list[str]:
 
     """
 
-    [v2.5.1 更新]
+    [v2.6.1 更新]
 
     動態從 data.gov.tw 取得 A1 / A2 最新下載連結。
 
@@ -206,21 +209,27 @@ def fetch_latest_accident_urls() -> list[str]:
 
     3. 若全面失效，退回安全的靜態歷史連結庫，確保管線不中斷。
 
+    [v2.6.1 修正] _collect_urls 改以值內容辨識 opdadm.moi.gov.tw 連結，
+
+    不再依賴 key 名稱（原本只辨識 downloadUrl/url，但政府 API 實際欄位名稱不同），
+
+    確保路由 1 能真正捕捉到最新資源 UUID。
+
     """
 
     session = make_session()
 
     dynamic_urls: list[str] = []
 
-    
+
 
     # 策略一與策略二的備用端點
 
     api_endpoints = [
 
-        "https://data.gov.tw/api/v2/rest/dataset/", # 首選 API
+        "https://data.gov.tw/api/v2/rest/dataset/",  # 首選 API
 
-        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/" # 警政署直連端點
+        "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/"  # 警政署直連端點
 
     ]
 
@@ -228,11 +237,11 @@ def fetch_latest_accident_urls() -> list[str]:
 
     dataset_ids = {
 
-        "A1": "12818", 
+        "A1": "12818",
 
         "A2": "13139",
 
-        "A1_alt": "986931B3-0E46-4F94-BF52-A2911499301F", 
+        "A1_alt": "986931B3-0E46-4F94-BF52-A2911499301F",
 
         "A2_alt": "02D40248-7CAA-4354-82EA-E27AB8DCAB39"
 
@@ -240,16 +249,23 @@ def fetch_latest_accident_urls() -> list[str]:
 
 
 
+    # [v2.6.1] 修正：不再依賴 key 名稱，改為辨識值本身是否為目標下載連結
+
     def _collect_urls(obj):
-        
-        if isinstance(obj, dict) and not dynamic_urls:
-          print(f"      [debug] API keys: {list(obj.keys())[:5]}")  # 只印前5個key
 
         if isinstance(obj, dict):
 
-            for key, value in obj.items():
+            for value in obj.values():
 
-                if key.lower() in ['downloadurl', 'url'] and isinstance(value, str) and value.startswith("http"):
+                if (
+
+                    isinstance(value, str)
+
+                    and value.startswith("http")
+
+                    and "opdadm.moi.gov.tw" in value
+
+                ):
 
                     dynamic_urls.append(value)
 
@@ -283,7 +299,7 @@ def fetch_latest_accident_urls() -> list[str]:
 
         print(f"      ⚠️ 路由 1 失效 ({e})")
 
-        
+
 
     # 如果策略一抓不到任何東西，啟動策略二：直連警政署主機
 
@@ -299,7 +315,13 @@ def fetch_latest_accident_urls() -> list[str]:
 
                 if resp.status_code == 200:
 
-                    url_pattern = re.compile(r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download")
+                    url_pattern = re.compile(
+
+                        r"https://opdadm\.moi\.gov\.tw/api/v1/no-auth/resource/api/dataset/"
+
+                        r"[A-Fa-f0-9\-]+/resource/[A-Fa-f0-9\-]+/download"
+
+                    )
 
                     links = url_pattern.findall(resp.text)
 
@@ -327,6 +349,12 @@ def fetch_latest_accident_urls() -> list[str]:
 
 
 
+    if unique_urls:
+
+        print(f"      ✅ 動態爬蟲成功取得 {len(unique_urls)} 個連結")
+
+
+
     # 策略三：終極 Fallback（包含 5 月最新 A2 檔案）
 
     if not unique_urls:
@@ -335,11 +363,11 @@ def fetch_latest_accident_urls() -> list[str]:
 
         unique_urls = [
 
-            #A1
+            # A1
 
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/02D40248-7CAA-4354-82EA-E27AB8DCAB39/resource/F0367893-0E0D-4E5A-A6BC-430AFAD27E83/download",
 
-            #A2
+            # A2
 
             "https://opdadm.moi.gov.tw/api/v1/no-auth/resource/api/dataset/986931B3-0E46-4F94-BF52-A2911499301F/resource/7C775EF1-A689-451D-AD02-1265F7D41ADC/download",
 
@@ -354,8 +382,6 @@ def fetch_latest_accident_urls() -> list[str]:
         ]
 
 
-
-    # 就是這行！一定要有它才能把抓到的網址交給主程式！
 
     return unique_urls
 
@@ -515,8 +541,6 @@ POPULATION_SOURCE = "國發會人口推估 2026（中推估），靜態嵌入，
 
 
 
-
-
 # ═══════════════════════════════════════════════════════
 
 # 主程式封裝（避免被 pytest 匯入時自動執行）
@@ -563,7 +587,7 @@ def run_pipeline():
 
     dfs = []
 
-    
+
 
     # 🌟 [v2.6] 掃描本地 data 目錄，自動匯入使用者提供的檔案
 
@@ -641,7 +665,7 @@ def run_pipeline():
 
                 raise Exception(f"HTTP Status {resp.status_code}")
 
-                
+
 
             content = resp.content
 
@@ -971,8 +995,6 @@ def run_pipeline():
 
 
 
-
-
     # ═══════════════════════════════════════════════════════
 
     # Step 3：Welch's T-Test + Cohen's d
@@ -1084,8 +1106,6 @@ def run_pipeline():
     else:
 
         print("   ⚠️  樣本量不足，跳過統計檢定")
-
-
 
 
 
@@ -1635,7 +1655,7 @@ def run_pipeline():
 
                 "update_time": RUN_TIMESTAMP,
 
-                "git_sha": GIT_SHA,             
+                "git_sha": GIT_SHA,
 
                 "target_years": CONFIG["target_roc_years"],
 
@@ -1785,7 +1805,7 @@ def run_pipeline():
 
     print("\n" + "=" * 60)
 
-    print("🚀 管線 v2.6.0 執行完畢！")
+    print("🚀 管線 v2.6.1 執行完畢！")
 
     print(f"   輸出目錄：{CONFIG['output_dir'].resolve()}")
 
@@ -1813,7 +1833,7 @@ def sync_to_s3(local_dir="output", bucket_name="traffic-dashboard-743181156800")
 
     print(f"\n🚀 開始同步至 S3 Bucket: {bucket_name}...")
 
-    
+
 
     for root, dirs, files in os.walk(local_dir):
 
@@ -1825,7 +1845,7 @@ def sync_to_s3(local_dir="output", bucket_name="traffic-dashboard-743181156800")
 
             relative_path = os.path.relpath(local_path, local_dir)
 
-            
+
 
             # 判斷快取策略 (HTML 設為 no-cache)
 
@@ -1835,7 +1855,7 @@ def sync_to_s3(local_dir="output", bucket_name="traffic-dashboard-743181156800")
 
                 extra_args = {'ContentType': 'text/html', 'CacheControl': 'no-cache'}
 
-            
+
 
             s3.upload_file(local_path, bucket_name, relative_path, ExtraArgs=extra_args)
 
@@ -1855,5 +1875,4 @@ if __name__ == "__main__":
 
     run_pipeline()
 
-    sync_to_s3() 
-
+    sync_to_s3()
