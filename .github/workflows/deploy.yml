@@ -43,7 +43,7 @@ jobs:
 
       # ── 🔍 安全漏洞掃描與測試環境 ───────────────────────────────
       - name: 🐍 Set up Python for audit & tests
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
